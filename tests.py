@@ -104,6 +104,14 @@ def test_persona_and_instructions_are_separate_and_labeled():
     assert set(app.ROUTE_GUIDANCE) == set(app.INTENTS)
 
 
+def test_instructions_cover_locals_and_typo_ids():
+    assert "preferred date(s)" in app.INSTRUCTIONS and "never assume a person is" in app.INSTRUCTIONS
+    assert "travel dates" not in app.INSTRUCTIONS.lower()
+    assert "preferred date or dates" in app.ROUTE_GUIDANCE["LEAD_COLLECTION"]
+    assert "ask which experience they meant instead of logging it" in app.INSTRUCTIONS
+    assert "not \"travel dates\"" in app.REFLECTION_PROMPT
+
+
 def test_system_prompt_contains_all_parts():
     sp = app.build_system_prompt(app.Route("LEAD_COLLECTION", ["FEEDBACK_UNKNOWN"]), today=date(2026, 10, 11))
     order = [sp.index(h) for h in ["# PERSONA", "# INSTRUCTIONS", "# CONTEXT", "# ROUTING", "# BUSINESS KNOWLEDGE"]]
