@@ -26,43 +26,43 @@ SERVICES
 9. Personalized recommendations and itinerary suggestions — our AI concierge, Alaa, can suggest a combination of experiences built around a visitor's interests, budget, group size, and number of days, and the team can then refine it.
 
 EXPERIENCE CATALOG
-All prices are in US dollars and are per person. The full catalog, with group sizes, inclusions, seasons, and notes for every experience, is maintained in experiences.csv, which is the source of truth for catalog facts.
+All prices are in US dollars and are per person. Durations are the approximate length of each experience. The full catalog, with group sizes, inclusions, seasons, and notes for every experience, is maintained in experiences.csv, which is the source of truth for catalog facts.
 
 Culture
-- D01 Stories of Deir el Qamar (Chouf, Culture) — half day — $25 per person
-- D12 Tripoli Old Souks and Sweets (Tripoli, Culture) — half day — $27 per person
-- D14 Sidon Sea Castle and Old Souk (Sidon, Culture) — half day — $26 per person
+- D01 Stories of Deir el Qamar (Chouf, Culture) — half day (about 4 hours) — $25 per person
+- D12 Tripoli Old Souks and Sweets (Tripoli, Culture) — half day (about 4 hours) — $27 per person
+- D14 Sidon Sea Castle and Old Souk (Sidon, Culture) — half day (about 4 hours) — $26 per person
 
 History and heritage
-- D04 Heritage Through Time (Byblos, History) — full day — $55 per person
-- D08 Baalbek: City of the Sun (Bekaa, History) — full day — $60 per person
-- D13 Tyre: Ruins by the Sea (Tyre, History) — full day — $52 per person
-- D18 Beiteddine Palace and Shouf Cedars (Chouf, History) — full day — $58 per person
+- D04 Heritage Through Time (Byblos, History) — full day (about 8 hours) — $55 per person
+- D08 Baalbek: City of the Sun (Bekaa, History) — full day (about 9 hours) — $60 per person
+- D13 Tyre: Ruins by the Sea (Tyre, History) — full day (about 8 hours) — $52 per person
+- D18 Beiteddine Palace and Shouf Cedars (Chouf, History) — full day (about 8 hours) — $58 per person
 
 Nature
-- D02 Chouf Nature Escape (Chouf, Nature) — half day — $30 per person
-- D10 Qadisha Valley Monasteries Hike (Qadisha Valley, Nature) — full day — $50 per person
-- D11 Cedars of God and Bcharre (Bcharre, Nature) — half day — $32 per person
-- D15 Jeita and Harissa Discovery (Keserwan, Nature) — half day — $40 per person
-- D17 Jezzine Waterfall and Pine Forest (Jezzine, Nature) — half day — $29 per person
+- D02 Chouf Nature Escape (Chouf, Nature) — half day (about 4 hours) — $30 per person
+- D10 Qadisha Valley Monasteries Hike (Qadisha Valley, Nature) — full day (about 7 hours) — $50 per person
+- D11 Cedars of God and Bcharre (Bcharre, Nature) — half day (about 4 hours) — $32 per person
+- D15 Jeita and Harissa Discovery (Keserwan, Nature) — half day (about 5 hours) — $40 per person
+- D17 Jezzine Waterfall and Pine Forest (Jezzine, Nature) — half day (about 4 hours) — $29 per person
 
 Food and drink
 - D03 Taste of the Village (Chouf, Food) — 2-3 hours — $35 per person
 - D07 Beirut Street Food Walk (Beirut, Food) — 2-3 hours — $30 per person
-- D09 Zahle Vineyards and Arak Tasting (Bekaa, Food) — half day — $45 per person
+- D09 Zahle Vineyards and Arak Tasting (Bekaa, Food) — half day (about 4 hours) — $45 per person
 
 Craft
 - D16 Pottery and Craft Workshop (Metn, Craft) — 2-3 hours — $38 per person
 
 Coast
-- D05 Coastal Charms of Batroun (Batroun, Coast) — half day — $28 per person
+- D05 Coastal Charms of Batroun (Batroun, Coast) — half day (about 4 hours) — $28 per person
 
 Adventure
-- D19 Snowshoeing in the Cedars (Bcharre, Adventure) — half day — $45 per person
+- D19 Snowshoeing in the Cedars (Bcharre, Adventure) — half day (about 4 hours) — $45 per person
 - D20 Batroun Sunset Kayak (Batroun, Adventure) — 2-3 hours — $40 per person
 
 Overnight
-- D06 Mountain Village Retreat (Qadisha Valley, Overnight) — overnight — $85 per person
+- D06 Mountain Village Retreat (Qadisha Valley, Overnight) — overnight (one night) — $85 per person
 
 SEASONS
 Most experiences run year-round. Some are seasonal: D02, D10, and D18 run from spring to autumn (April to November); D20 runs from late spring to early autumn (May to October); and D19 runs only in winter (December to March) and depends on snow. Seasonal notes for each experience are listed in the catalog. Exact dates are always confirmed by the team.
@@ -97,6 +97,7 @@ Some details depend on the date, the group, and the partner, so we do not publis
 - Accessibility and mobility suitability
 - Dietary and allergy suitability
 - Safety arrangements for outdoor and water activities
+- Exact start times, meeting points, and the detailed schedule of the day
 - Opening hours of sites and travel times between locations
 - Payment methods, refunds, and cancellation terms
 

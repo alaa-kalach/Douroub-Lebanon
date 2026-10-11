@@ -51,9 +51,14 @@ def test_summary_and_pdf_agree_with_catalog():
     txt = _norm((ME / "business_summary.txt").read_text(encoding="utf-8"))
     pdf = _norm(_pdf_text())
     for r in pd.read_csv(ME / "experiences.csv").itertuples():
-        line = f"{r.id} {r.name} ({r.region}, {r.category}) - {r.duration_label.lower()} - ${r.price_usd} per person"
+        label = r.duration_label.lower()
+        duration = (label if "hour" in label else "overnight (one night)" if label == "overnight"
+                    else f"{label} (about {r.duration_hours} hours)")
+        line = f"{r.id} {r.name} ({r.region}, {r.category}) - {duration} - ${r.price_usd} per person"
         assert line in txt, f"summary mismatch for {r.id}: expected '{line}'"
         assert r.name in pdf and f"${r.price_usd} per person" in pdf, f"PDF mismatch for {r.id}"
+        if "hour" not in label and label != "overnight":
+            assert f"~{r.duration_hours}" in pdf, f"PDF missing hours for {r.id}"
 
 
 def test_no_course_or_assignment_references():
@@ -110,6 +115,18 @@ def test_instructions_cover_locals_and_typo_ids():
     assert "preferred date or dates" in app.ROUTE_GUIDANCE["LEAD_COLLECTION"]
     assert "ask which experience they meant instead of logging it" in app.INSTRUCTIONS
     assert "not \"travel dates\"" in app.REFLECTION_PROMPT
+
+
+def test_instructions_allow_general_knowledge_but_not_live_data_or_logging_it():
+    text = " ".join(app.INSTRUCTIONS.split())
+    assert "general background about Lebanon" in text and "You have no live data" in text
+    assert "Never log general or live questions (weather, restaurant or hotel suggestions)" in text
+    assert "anything the catalog already answers, such as durations" in text
+    assert "do not name or recommend specific businesses" in text
+    assert "Only say the team will follow up on something that was actually recorded" in text
+    assert "Durations are documented" in text and "Durations are documented" in app.REFLECTION_PROMPT
+    assert "assume the next upcoming one and say so" in text
+    assert "General background about Lebanon" in " ".join(app.REFLECTION_PROMPT.split())
 
 
 def test_system_prompt_contains_all_parts():
@@ -539,6 +556,66 @@ def test_agent_executes_tool_and_returns_real_result_to_model(isolated_logs):
     assert json.loads(tool_reply["content"])["inquiry_id"] == saved[0]["inquiry_id"]
     assert session.saved_ids() == {saved[0]["inquiry_id"]} and session.visitor_name == "Rami"
     assert turn.tool_events[0]["arguments"]["email"] == "r***@example.com"
+
+
+def test_agent_refuses_an_email_the_visitor_never_typed(isolated_logs):
+    # The model guessed "rana.khal@example.com" from the name: Python must refuse it and ask for the real one.
+    client = ScriptedClient(
+        tool_msg(("record_customer_interest", {"email": "rana.khal@example.com", "name": "Rana Khal",
+                                               "message": "D04 for 3 people on 21 October"})),
+        text_msg("Could you share your email address?"))
+    session = app.Session()
+    history = [{"role": "user", "content": "I'd like to book D04 for 3 people on 21 October"},
+               {"role": "assistant", "content": "May I have your name and email?"}]
+    turn = app.run_agent("Rana khal", history, session=session, client=client, use_llm_router=False)
+    assert turn.tool_events[0]["status"] == "error"
+    result = json.loads([m for m in client.requests[1]["messages"] if m["role"] == "tool"][0]["content"])
+    assert result["error"] == "details_not_from_visitor" and result["missing"] == ["email"]
+    assert session.saved_records == [] and not (isolated_logs / "inquiries.jsonl").exists()
+
+
+def test_agent_accepts_contact_details_typed_in_an_earlier_turn(isolated_logs):
+    session = app.Session()
+    app.run_agent("My email is Rana.K@Example.com", session=session, client=ScriptedClient(text_msg("Thanks!")),
+                  use_llm_router=False)
+    client = ScriptedClient(
+        tool_msg(("record_customer_interest", {"email": "rana.k@example.com", "name": "Rana Khalil",
+                                               "message": "D04 for 3 people on 21 October"})),
+        text_msg("Saved."))
+    turn = app.run_agent("I'm Rana, D04 for 3 on 21 October please", session=session, client=client,
+                         use_llm_router=False)  # no history passed: the session still remembers what was typed
+    assert turn.tool_events[0]["status"] == "success" and len(_lines(isolated_logs / "inquiries.jsonl")) == 1
+
+
+@pytest.mark.parametrize("args,text,missing", [
+    ({"email": "a@b.com", "name": "Ana"}, "ana here, a@b.com", []),
+    ({"email": "a@b.com", "name": "Ana"}, "my email is A@B.com, I'm ANA", []),
+    ({"email": "ana@b.com", "name": "Ana"}, "I'm Ana", ["email"]),
+    ({"email": "x@y.com", "name": "Visitor"}, "book D04, x@y.com", ["name"]),
+    ({"email": "nope", "name": "Ana"}, "I'm Ana", []),  # malformed emails are left to argument validation
+    ({"email": "rami@ex.com", "name": "رامي"}, "انا رامي rami@ex.com", []),
+])
+def test_lead_details_must_come_from_the_visitor(args, text, missing):
+    assert app.lead_details_not_from_visitor(args, text) == missing
+
+
+def test_browser_sessions_never_share_memory(monkeypatch, isolated_logs):
+    monkeypatch.setattr(app, "API_KEY", "test")
+    monkeypatch.setattr(app, "REFLECTION_MODE", "off")
+    app.SESSIONS.clear()
+    client = ScriptedClient(
+        text_msg('{"intent": "LEAD_COLLECTION", "secondary": [], "reason": "booking"}'),
+        tool_msg(("record_customer_interest", {"email": "lina@example.com", "name": "Lina", "message": "D05 for 3 people on Sunday"})),
+        text_msg("Saved."),
+        text_msg('{"intent": "LEAD_COLLECTION", "secondary": [], "reason": "booking"}'),
+        tool_msg(("record_customer_interest", {"email": "lina@example.com", "name": "Rana", "message": "D04 for 3 people on Sunday"})),
+        text_msg("Could you share your email?"))
+    monkeypatch.setattr(app, "get_client", lambda: client)
+    app.respond("Book D05 for 3, Lina, lina@example.com", [], False, False, SimpleNamespace(session_hash="tab-a"))
+    app.respond("I'm Rana, book D04 for 3", [], False, False, SimpleNamespace(session_hash="tab-b"))
+    a, b = app.SESSIONS["tab-a"], app.SESSIONS["tab-b"]
+    assert len(a.saved_ids()) == 1 and b.saved_ids() == set()  # tab B cannot reuse tab A's email
+    assert all("lina@example.com" not in m for m in b.visitor_messages) and b.visitor_name == ""
 
 
 def test_agent_chains_tools_across_rounds():
