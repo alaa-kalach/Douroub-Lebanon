@@ -830,7 +830,7 @@ def test_respond_returns_trace_panels_and_final_reply(monkeypatch, isolated_logs
     monkeypatch.setattr(app, "get_client", lambda: client)
     out = app.respond("Book D05 for 3, Lina, lina@example.com", [], True, True, SimpleNamespace(session_hash="t1"))
     titles = [m.metadata["title"] for m in out[:-1]]
-    assert titles[0] == "🧭 Route: LEAD_COLLECTION"
+    assert titles[0] == "🧭 Understood as: booking request"
     assert titles[1] == "🛠️ Tool: record_customer_interest (success)"
     assert titles[2].startswith("🔍 Reflection")
     assert out[-1].content.startswith("Saved!") and not out[-1].metadata
@@ -845,8 +845,25 @@ def test_respond_without_trace_returns_plain_text_and_survives_crashes(monkeypat
     assert app.respond("hi", [], False, False) == app.FALLBACK_REPLY
 
 
-def test_build_demo_constructs_the_chat_interface():
+def test_build_demo_constructs_the_branded_page():
     demo = app.build_demo()
-    assert isinstance(demo, app.gr.ChatInterface) and demo.title == app.APP_TITLE
-    assert "not** a confirmed reservation" in app.APP_DESCRIPTION
+    assert isinstance(demo, app.gr.Blocks) and isinstance(demo.chat, app.gr.ChatInterface)
+    reflect_box, trace_box = demo.chat.additional_inputs
+    assert reflect_box.value is True and trace_box.value is True  # settings rendered on top, both on
+    assert "Douroub Lebanon" in app.HEADER_HTML and "دروب لبنان" in app.HEADER_HTML
+    assert "doesn't reserve a spot" in app.FOOTNOTE_HTML and "passport" in app.FOOTNOTE_HTML
+    assert set(app.LAUNCH_OPTIONS) == {"theme", "css", "head", "footer_links"}
     assert len(app.EXAMPLES) >= 5 and app._in_notebook() is False
+
+
+def test_duplicate_inquiry_still_counts_as_saved_in_a_new_session(isolated_logs):
+    first, second = app.Session(), app.Session()
+    args = {"email": "lina@example.com", "name": "Lina", "message": "D05 for 3 people"}
+    for session in (first, second):  # the same request sent from two browser tabs
+        result = app.execute_tool("record_customer_interest", args)
+        session.update_from_tool("record_customer_interest", args, result)
+    assert first.saved_ids() == second.saved_ids() and len(_lines(isolated_logs / "inquiries.jsonl")) == 1
+    reply = f"Saved! Your reference is {next(iter(second.saved_ids()))}."
+    turn = app._fake_turn("LEAD_COLLECTION", reply,
+                          [{"tool": "record_customer_interest", "status": "success", "arguments": {}, "result": result}])
+    assert app.deterministic_checks(reply, turn, second) == []

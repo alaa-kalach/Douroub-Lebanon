@@ -1229,10 +1229,13 @@ class Session:
     def update_from_tool(self, name: str, args: dict, result: dict) -> None:
         if result.get("status") != "success":
             return
-        if name == "record_customer_interest" and not result.get("duplicate"):
-            self.saved_records.append({"type": "inquiry", "id": result["inquiry_id"]})
+        # A duplicate result still points to a record that really exists, so it counts for this conversation too
+        # (e.g. the same visitor resending a request from another tab); each ID is listed once.
+        if name == "record_customer_interest":
+            if result["inquiry_id"] not in self.saved_ids():
+                self.saved_records.append({"type": "inquiry", "id": result["inquiry_id"]})
             self.visitor_name = _clean(args.get("name", "")) or self.visitor_name
-        elif name == "record_feedback" and not result.get("duplicate"):
+        elif name == "record_feedback" and result["feedback_id"] not in self.saved_ids():
             self.saved_records.append({"type": "feedback", "id": result["feedback_id"]})
         for key in PREFERENCE_KEYS:
             if args.get(key) not in (None, "", []):
@@ -1862,15 +1865,7 @@ def evaluate_reflection(cases=REFLECTION_EVAL_CASES, use_llm: bool = True, clien
 import gradio as gr
 from collections import OrderedDict
 
-APP_TITLE = "Douroub Lebanon — Alaa, your travel concierge"
-APP_DESCRIPTION = """\
-**Ahla w sahla!** I'm Alaa, Douroub Lebanon's AI concierge. Ask me about village walks, hikes, food and craft \
-workshops, heritage days, and coastal experiences across Lebanon. I can compare options, plan a trip around your \
-budget, and pass your inquiry to our team.
-
-*Prices are in USD per person. Sending an inquiry is **not** a confirmed reservation: our team confirms \
-availability, dates, and the final price by email. Please don't share passport, payment, or health details.*\
-"""
+APP_TITLE = "Douroub Lebanon: chat with Alaa"
 EXAMPLES = [
     "What can I do in the Chouf for under $35 per person?",
     "Compare D04 and D08 for a group of 4. Which is cheaper?",
@@ -1879,6 +1874,8 @@ EXAMPLES = [
     "Is transport from Beirut included in the Baalbek day?",
     "بدي زور طرابلس، شو بتقترح؟",
 ]
+ROUTE_NAMES = {"GENERAL_QUESTION": "general question", "LEAD_COLLECTION": "booking request",
+               "FEEDBACK_UNKNOWN": "feedback or unanswered question"}
 MAX_MESSAGE_CHARS = 2000
 MAX_SESSIONS = 500
 SESSIONS = OrderedDict()  # one Session per browser tab (Gradio session hash), least-recently-used first
@@ -1899,9 +1896,9 @@ def get_session(request) -> Session:
 def trace_messages(turn: AgentTurn) -> list:
     """Collapsible panels that show how the reply was produced: route, tool calls, reflection."""
     r = turn.route
-    panels = [gr.ChatMessage(role="assistant", content=f"{r.reason or '-'} (method: {r.method})",
-                             metadata={"title": f"🧭 Route: {r.intent}" + (f" + {', '.join(r.secondary)}" if r.secondary else ""),
-                                       "status": "done"})]
+    names = [ROUTE_NAMES[i] for i in [r.intent] + list(r.secondary)]
+    panels = [gr.ChatMessage(role="assistant", content=f"`{r.intent}`: {r.reason or '-'} (router: {r.method})",
+                             metadata={"title": "🧭 Understood as: " + " + ".join(names), "status": "done"})]
     for e in turn.tool_events:
         res = e["result"]
         key_facts = {k: res[k] for k in ("inquiry_id", "feedback_id", "total_matches", "feasible",
@@ -1943,26 +1940,110 @@ def respond(message: str, history: list, reflection_on: bool = True, show_trace:
     return (trace_messages(turn) + [final]) if show_trace else turn.reply
 
 
-def build_demo() -> gr.ChatInterface:
-    return gr.ChatInterface(
-        fn=respond,
-        title=APP_TITLE,
-        description=APP_DESCRIPTION,
-        examples=[[e] for e in EXAMPLES],  # question only: shown as cards; the current settings apply
-        cache_examples=False,
-        additional_inputs=[
-            gr.Checkbox(value=True, label="Reflection check (Alaa reviews each draft before sending it)"),
-            gr.Checkbox(value=True, label="Show how Alaa works (route, tool calls, reflection)"),
-        ],
-        additional_inputs_accordion=gr.Accordion("Settings", open=False),
-        chatbot=gr.Chatbot(height=560, show_label=False,
-                           placeholder="Ask Alaa about experiences, prices, or a trip plan."),
-        textbox=gr.Textbox(placeholder="Type your message…", max_lines=6),
-        fill_height=True,
-    )
+# --------------------------------------------------------------------------- look and feel
+# Palette from the landscape: cedar green, sage stone, the blue of old house shutters, roof-tile terracotta.
+CEDAR = gr.themes.Color(c50="#EEF5F1", c100="#D6E8DE", c200="#ADD0BE", c300="#7FB399", c400="#4F9374",
+                        c500="#2F7658", c600="#245F47", c700="#1E4D3F", c800="#183E33", c900="#14332B",
+                        c950="#0C211B", name="cedar")
+STONE = gr.themes.Color(c50="#F6F8F6", c100="#EEF2EF", c200="#DCE3DE", c300="#C3CEC7", c400="#93A39A",
+                        c500="#66786F", c600="#4B5D55", c700="#354640", c800="#233530", c900="#172823",
+                        c950="#0E1A16", name="stone_green")
+THEME = gr.themes.Soft(
+    primary_hue=CEDAR, neutral_hue=STONE, radius_size="md",
+    font=[gr.themes.GoogleFont("IBM Plex Sans Arabic"), "system-ui", "sans-serif"],
+).set(
+    body_background_fill="#EEF2EC", body_background_fill_dark="#0E1A16",
+    body_text_color="#14332B", body_text_color_dark="#E3ECE6",
+    block_background_fill="#FFFFFF", block_background_fill_dark="#152520",
+    block_border_color="#D7E1DA", block_border_color_dark="#253A33", block_shadow="none", block_radius="14px",
+    background_fill_secondary_dark="#11201B", input_background_fill_dark="#1A2C26",
+    color_accent_soft="#E2EDF2", color_accent_soft_dark="#1F3A46",
+    button_primary_background_fill="#1E4D3F", button_primary_background_fill_hover="#245F47",
+    button_primary_text_color="#FFFFFF", checkbox_background_color_selected="#1E4D3F",
+    checkbox_border_color_selected="#1E4D3F", input_border_color_focus="#2F6E8F",
+)
+HEAD = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
+        '<link href="https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@500;600&display=swap" rel="stylesheet">')
+CSS = """
+.gradio-container { max-width: 980px !important; margin: 0 auto !important; }
+.db-header { background: #1E4D3F; color: #F4F7F3; border-radius: 18px; padding: 28px 32px 6px; }
+.db-brand { display: flex; justify-content: space-between; align-items: baseline; gap: 8px 20px; flex-wrap: wrap; }
+.db-title, .db-title-ar { font-family: 'Reem Kufi', 'IBM Plex Sans Arabic', sans-serif; font-weight: 600;
+                          margin: 0; color: #FFFFFF; line-height: 1.15; }
+.db-title { font-size: clamp(28px, 4.2vw, 42px); }
+.db-title-ar { font-size: clamp(26px, 3.8vw, 38px); color: #CFE1D6; }
+.db-lede { margin: 12px 0 0; max-width: 62ch; font-size: 16px; line-height: 1.6; color: #D8E6DD; }
+.db-trail { display: block; width: 100%; height: auto; margin-top: 10px; }
+#db-settings { background: transparent; border: none; gap: 12px; }
+#db-settings > div { border-radius: 14px; }
+.db-footnote { font-size: 13.5px; line-height: 1.55; color: #4B6158; text-align: center;
+               max-width: 72ch; margin: 4px auto 20px; }
+.message-content p, .message-content li { unicode-bidi: plaintext; text-align: start; }
+#db-chat .example { background: #F4F8F5; border: 1px solid #D3E0D7; border-radius: 12px; padding: 12px 16px;
+                    text-align: start; transition: border-color .15s, background .15s; }
+#db-chat .example:hover { background: #EAF2ED; border-color: #2F7658; }
+#db-chat .example:focus-visible { outline: 2px solid #2F6E8F; outline-offset: 2px; }
+@media (prefers-color-scheme: dark) {
+  #db-chat .example { background: #1A2C26; border-color: #2B443B; }
+  #db-chat .example:hover { background: #20362F; border-color: #4F9374; }
+}
+.html-container:has(.db-header), .html-container:has(.db-footnote) { padding: 0 !important; }
+#db-chat .placeholder-content { padding: 0 20px; }
+@media (max-width: 640px) {
+  .db-header { padding: 22px 20px 4px; border-radius: 14px; }
+  .db-lede { font-size: 15px; line-height: 1.55; }
+  #db-chat .example:nth-child(n+5) { display: none; }
+}
+@media (prefers-color-scheme: dark) { .db-footnote { color: #9DB5AA; } }
+"""
+HEADER_HTML = """
+<header class="db-header">
+  <div class="db-brand">
+    <h1 class="db-title">Douroub Lebanon</h1>
+    <span class="db-title-ar" lang="ar" dir="rtl">دروب لبنان</span>
+  </div>
+  <p class="db-lede">Alaa, our AI concierge, knows our village walks, hikes, food workshops, and heritage days
+  across Lebanon. Ask for ideas, compare experiences, plan a day or a weekend within your budget, or send a
+  request to our team, in English, Arabic, or French.</p>
+  <svg class="db-trail" viewBox="0 0 1200 64" role="img" aria-label="A winding trail with waypoints">
+    <path d="M0,40 C110,12 210,56 330,34 S540,8 660,34 S880,60 1000,30 S1150,16 1200,28"
+          fill="none" stroke="#A9D0BB" stroke-width="4" stroke-dasharray="0.5 13" stroke-linecap="round"/>
+    <circle cx="330" cy="34" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
+    <circle cx="660" cy="34" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
+    <circle cx="1000" cy="30" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
+  </svg>
+</header>
+"""
+FOOTNOTE_HTML = """
+<p class="db-footnote">Prices are in USD per person. Sending a request doesn't reserve a spot: Khaled from our
+team confirms availability, dates, and the final price by email. Please don't share passport, payment, or health
+details in this chat.</p>
+"""
+LAUNCH_OPTIONS = {"theme": THEME, "css": CSS, "head": HEAD, "footer_links": ["gradio"]}
 
 
-THEME = gr.themes.Soft(primary_hue="green", secondary_hue="orange")
+def build_demo() -> gr.Blocks:
+    """Branded page: header, settings on top, the ChatInterface, and the booking notice."""
+    with gr.Blocks(title=APP_TITLE, fill_height=True) as demo:
+        gr.HTML(HEADER_HTML, padding=False)
+        with gr.Row(elem_id="db-settings", equal_height=True):
+            reflect_box = gr.Checkbox(value=True, label="Review replies before sending",
+                                      info="Alaa checks each draft against its rules and fixes mistakes.")
+            trace_box = gr.Checkbox(value=True, label="Show how Alaa works",
+                                    info="See the route, tool calls, and review behind each reply.")
+        demo.chat = gr.ChatInterface(
+            fn=respond,
+            additional_inputs=[reflect_box, trace_box],  # already placed above, so they stay on top
+            examples=[[e] for e in EXAMPLES],  # question only: shown as cards; the current settings apply
+            cache_examples=False,
+            chatbot=gr.Chatbot(height=520, show_label=False, elem_id="db-chat",
+                               placeholder="### Ahla w sahla!\nWhere would you like to go? Pick an idea "
+                                           "below, or ask in English, Arabic, or French."),
+            textbox=gr.Textbox(placeholder="Ask Alaa about an experience, a price, or a plan…", max_lines=6),
+            fill_height=True,
+        )
+        gr.HTML(FOOTNOTE_HTML, padding=False)
+    return demo
 
 
 def _in_notebook() -> bool:
@@ -1974,4 +2055,4 @@ def _in_notebook() -> bool:
 
 
 if __name__ == "__main__" and not _in_notebook():  # `python app.py` locally or on Hugging Face Spaces
-    build_demo().launch(theme=THEME)
+    build_demo().launch(**LAUNCH_OPTIONS)
