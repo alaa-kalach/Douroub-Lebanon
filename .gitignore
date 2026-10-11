@@ -4,3 +4,7 @@ __pycache__/
 *.py[cod]
 .env
 .ipynb_checkpoints/
+.pytest_cache/
+.gradio/
+logs/*.jsonl
+Thumbs.db
