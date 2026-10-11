@@ -80,6 +80,56 @@ def llm_call(client, attempts: int = 4, max_wait: float = 65, **kwargs):
             time.sleep(wait)
 
 
+# ---------------------------------------------------------------- model fallback chains
+# Free-tier quotas are per model, so when one model hits its limit another usually still has quota.
+def _model_chain(env_name: str, default: list) -> list:
+    names = [m.strip() for m in os.getenv(env_name, "").split(",") if m.strip()]
+    return list(dict.fromkeys(names or default))
+
+
+AGENT_MODELS = _model_chain("AGENT_MODELS", [AGENT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite"])
+FAST_MODELS = _model_chain("FAST_MODELS", [FAST_MODEL, "gemini-3.1-flash-lite", "gemini-3.6-flash"])
+AGENT_MODEL, FAST_MODEL = AGENT_MODELS[0], FAST_MODELS[0]  # the preferred model of each chain
+MODEL_COOLDOWN = {}  # model -> time before which it is skipped
+COOLDOWN_S = {"daily": 3600, "minute": 60, "server": 30, "missing": 600}
+
+
+def llm_call_with_fallback(client, models: list, **kwargs) -> tuple:
+    """Call the first available model in `models`; on a limit, switch to the next one at once.
+
+    A model that hits its daily quota rests for an hour, a per-minute limit for about a minute, a server error
+    for 30 s, and an unknown model name for 10 minutes. If every model is only rate-limited per minute, it waits
+    on the first one (llm_call's quota-aware retry) instead of failing. Returns (response, model_used).
+    """
+    now = time.time()
+    ready = [m for m in models if MODEL_COOLDOWN.get(m, 0) <= now] or list(models)
+    last_exc = None
+    for model in ready:
+        try:
+            resp = llm_call(client, attempts=1, model=model, **kwargs)
+            if model != models[0]:
+                print(f"[FALLBACK] answered by {model}")
+            return resp, model
+        except DailyQuotaExceeded as exc:
+            MODEL_COOLDOWN[model], last_exc = time.time() + COOLDOWN_S["daily"], exc
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if status == 429:
+                rest = min(_suggested_wait(exc) or COOLDOWN_S["minute"], COOLDOWN_S["minute"])
+            elif status == 404:
+                rest = COOLDOWN_S["missing"]
+            elif isinstance(status, int) and status >= 500:
+                rest = COOLDOWN_S["server"]
+            else:
+                raise  # a bad request or a network failure would fail on every model alike
+            MODEL_COOLDOWN[model], last_exc = time.time() + rest, exc
+        print(f"[FALLBACK] {model} unavailable ({type(last_exc).__name__}); trying the next model")
+    waiting = [m for m in ready if MODEL_COOLDOWN.get(m, 0) - time.time() <= COOLDOWN_S["minute"] + 1]
+    if waiting:  # every model is busy for now, but a short wait will free one
+        return llm_call(client, model=waiting[0], **kwargs), waiting[0]
+    raise last_exc
+
+
 SUMMARY_PATH = ME_DIR / "business_summary.txt"
 PDF_PATH = ME_DIR / "about_business.pdf"
 CATALOG_PATH = ME_DIR / "experiences.csv"
@@ -214,6 +264,7 @@ class Route:
     method: str = "rules"  # "llm", "rules", or "rules-fallback"
     reason: str = ""
     latency_s: float = 0.0
+    model: str = ""  # which model classified the message (LLM router only)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -330,11 +381,11 @@ def route_with_llm(message: str, last_assistant: str | None = None, client=None,
     context = f"Previous assistant message: {last_assistant}\n\n" if last_assistant else ""
     user = f"{context}<visitor_message>\n{message}\n</visitor_message>"
     start = time.perf_counter()
-    resp = llm_call(
-        client, model=model or FAST_MODEL, temperature=0,
+    resp, used = llm_call_with_fallback(
+        client, [model] if model else FAST_MODELS, temperature=0,
         messages=[{"role": "system", "content": ROUTER_PROMPT}, {"role": "user", "content": user}])
     intent, secondary, reason = _parse_router_json(resp.choices[0].message.content)
-    return Route(intent, secondary, "llm", reason, round(time.perf_counter() - start, 3))
+    return Route(intent, secondary, "llm", reason, round(time.perf_counter() - start, 3), used)
 
 
 def last_assistant_message(history) -> str | None:
@@ -457,18 +508,8 @@ def mask_email(email: str) -> str:
 
 
 def push(text: str) -> None:
-    """Notify the team. Always prints; also sends a Pushover phone notification when
-    PUSHOVER_USER and PUSHOVER_TOKEN are set in .env (optional)."""
+    """Notify the team: print a [PUSH] line (the record itself is already saved to a JSONL log file)."""
     print(f"[PUSH] {text}")
-    user, token = os.getenv("PUSHOVER_USER"), os.getenv("PUSHOVER_TOKEN")
-    if user and token:
-        try:
-            import httpx
-
-            httpx.post("https://api.pushover.net/1/messages.json",
-                       data={"user": user, "token": token, "message": text[:1000]}, timeout=10)
-        except Exception as exc:  # a failed notification must never break the chat
-            print(f"[PUSH] notification failed: {type(exc).__name__}")
 
 
 def _clean(text) -> str:
@@ -1309,6 +1350,7 @@ class AgentTurn:
     rounds: int = 0
     latency_s: float = 0.0
     error: str = ""
+    model: str = ""         # the model that wrote the reply (may be a fallback; see Section 0)
     draft: str = ""         # the agent's reply before reflection (Section 6)
     reflection: dict = None  # reflection report (Section 6)
 
@@ -1348,10 +1390,14 @@ def run_agent(message: str, history=None, session: Session = None, client=None, 
     r = route(message, recent, use_llm=use_llm_router, client=client)
     messages = ([{"role": "system", "content": build_system_prompt(r, memory=session.summary())}]
                 + recent + [{"role": "user", "content": message}])
-    events, reply, error, rounds = [], "", "", 0
+    events, reply, error, rounds, used = [], "", "", 0, ""
+    chain = [model] if model else AGENT_MODELS
+
+    def models_for_this_turn():  # stay on the model that started this reply; fall back only if it fails
+        return [used] + [m for m in chain if m != used] if used else chain
     try:
         for rounds in range(1, MAX_TOOL_ROUNDS + 1):
-            resp = llm_call(client, model=model or AGENT_MODEL, messages=messages, tools=OPENAI_TOOLS)
+            resp, used = llm_call_with_fallback(client, models_for_this_turn(), messages=messages, tools=OPENAI_TOOLS)
             msg = resp.choices[0].message
             calls = msg.tool_calls or []
             if not calls:
@@ -1371,14 +1417,14 @@ def run_agent(message: str, history=None, session: Session = None, client=None, 
             error = "max_tool_rounds"
             messages.append({"role": "user", "content": "(System: tool limit reached. Answer the visitor now "
                                                         "using only the tool results above. Do not call tools.)"})
-            resp = llm_call(client, model=model or AGENT_MODEL, messages=messages)
+            resp, used = llm_call_with_fallback(client, models_for_this_turn(), messages=messages)
             reply = (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # API or network failure: never crash the chat
         error = f"{type(exc).__name__}: {exc}"[:300]
     if not reply:
         reply = BUSY_REPLY if ("429" in error or "Quota" in error) else FALLBACK_REPLY
     session.turns += 1
-    turn = AgentTurn(reply=reply, route=r, tool_events=events, rounds=rounds, error=error, draft=reply)
+    turn = AgentTurn(reply=reply, route=r, tool_events=events, rounds=rounds, error=error, model=used, draft=reply)
     if reflect and not error and "reflect_and_revise" in globals():
         turn.reply, turn.reflection = reflect_and_revise(message, turn, session, history=recent, client=client)
     turn.latency_s = round(time.perf_counter() - start, 2)
@@ -1740,9 +1786,10 @@ def llm_reflection(message: str, draft: str, turn, session, flags: list, history
                  "transport, availability, accessibility, dietary suitability, safety, opening hours, payment and "
                  "refunds are confirmed by the team on request."
                + f"\n\nDRAFT:\n{draft}")
-    resp = llm_call(client or get_client(), model=FAST_MODEL, temperature=0,
-                    messages=[{"role": "system", "content": REFLECTION_PROMPT}, {"role": "user", "content": context}])
-    return _parse_reflection(resp.choices[0].message.content)
+    resp, used = llm_call_with_fallback(
+        client or get_client(), FAST_MODELS, temperature=0,
+        messages=[{"role": "system", "content": REFLECTION_PROMPT}, {"role": "user", "content": context}])
+    return dict(_parse_reflection(resp.choices[0].message.content), model=used)
 
 
 def log_reflection(entry: dict) -> None:
@@ -1765,7 +1812,8 @@ def reflect_and_revise(message: str, turn, session, history=None, client=None) -
     if use_llm and REFLECTION_MODE != "off":
         try:
             review = llm_reflection(message, draft, turn, session, flags, history, client)
-            report.update(llm_verdict=review["verdict"], llm_issues=review["issues"], method="llm")
+            report.update(llm_verdict=review["verdict"], llm_issues=review["issues"], method="llm",
+                          model=review.get("model", ""))
             if review["verdict"] == "revise" and review["revised_reply"]:
                 final = review["revised_reply"]
         except Exception as exc:  # reflection must never block the reply
@@ -1899,7 +1947,8 @@ def trace_messages(turn: AgentTurn) -> list:
     """Collapsible panels that show how the reply was produced: route, tool calls, reflection."""
     r = turn.route
     names = [ROUTE_NAMES[i] for i in [r.intent] + list(r.secondary)]
-    panels = [gr.ChatMessage(role="assistant", content=f"`{r.intent}`: {r.reason or '-'} (router: {r.method})",
+    router = f"{r.method}, {r.model}" if r.model else r.method
+    panels = [gr.ChatMessage(role="assistant", content=f"`{r.intent}`: {r.reason or '-'} (router: {router})",
                              metadata={"title": "🧭 Understood as: " + " + ".join(names), "status": "done"})]
     for e in turn.tool_events:
         res = e["result"]
@@ -1911,6 +1960,10 @@ def trace_messages(turn: AgentTurn) -> list:
                     f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`",
             metadata={"title": f"{'🛠️' if e['status'] == 'success' else '⚠️'} Tool: {e['tool']} ({e['status']})",
                       "status": "done"}))
+    if turn.model and turn.model != AGENT_MODELS[0]:
+        panels.append(gr.ChatMessage(
+            role="assistant", content=f"{AGENT_MODELS[0]} had reached its usage limit, so {turn.model} answered instead.",
+            metadata={"title": f"🔁 Answered by backup model {turn.model}", "status": "done"}))
     if turn.reflection:
         rep = turn.reflection
         body = (f"Method: {rep['method']} | LLM verdict: {rep.get('llm_verdict') or '-'} | "

@@ -214,6 +214,7 @@ def isolated_logs(tmp_path, monkeypatch):
     """Every test writes logs to a temporary folder and starts with an empty de-duplication cache."""
     monkeypatch.setattr(app, "LOG_DIR", tmp_path / "logs")
     app._RECENT.clear()
+    app.MODEL_COOLDOWN.clear()  # no model starts a test "resting" after an earlier test's rate limit
     return tmp_path / "logs"
 
 
@@ -870,3 +871,88 @@ def test_duplicate_inquiry_still_counts_as_saved_in_a_new_session(isolated_logs)
     turn = app._fake_turn("LEAD_COLLECTION", reply,
                           [{"tool": "record_customer_interest", "status": "success", "arguments": {}, "result": result}])
     assert app.deterministic_checks(reply, turn, second) == []
+
+
+
+# ---------------------------------------------------------------- model fallback chains
+class ModelClient:
+    """Fake client whose behaviour depends on the model asked for: an exception, or a reply message."""
+
+    def __init__(self, behaviour: dict, default=None):
+        self.behaviour, self.default, self.models = behaviour, default, []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.models.append(kwargs["model"])
+        outcome = self.behaviour.get(kwargs["model"], self.default)
+        if isinstance(outcome, list):
+            outcome = outcome.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return SimpleNamespace(choices=[SimpleNamespace(message=outcome)])
+
+
+class Missing(Exception):
+    status_code = 404
+
+
+class BadRequest(Exception):
+    status_code = 400
+
+
+class ServerDown(Exception):
+    status_code = 503
+
+
+def test_chains_are_configured_and_start_with_the_preferred_model():
+    assert len(app.AGENT_MODELS) >= 2 and len(app.FAST_MODELS) >= 2
+    assert app.AGENT_MODELS[0] == app.AGENT_MODEL and app.FAST_MODELS[0] == app.FAST_MODEL
+
+
+def test_fallback_switches_at_once_and_rests_the_exhausted_model(monkeypatch):
+    monkeypatch.setattr(app.time, "sleep", lambda s: pytest.fail("should switch models, not wait"))
+    client = ModelClient({"a": RateLimit("429 quotaId GenerateRequestsPerDayPerProjectPerModel"),
+                          "b": text_msg("from b")})
+    resp, used = app.llm_call_with_fallback(client, ["a", "b", "c"], messages=[])
+    assert used == "b" and resp.choices[0].message.content == "from b" and client.models == ["a", "b"]
+    assert app.MODEL_COOLDOWN["a"] - app.time.time() > 3000  # daily limit: rests about an hour
+    app.llm_call_with_fallback(client, ["a", "b", "c"], messages=[])
+    assert client.models[-1] == "b" and client.models.count("a") == 1  # 'a' is skipped while resting
+
+
+def test_fallback_skips_unknown_models_and_server_errors():
+    client = ModelClient({"typo-model": Missing("model not found"), "b": ServerDown("503"), "c": text_msg("ok")})
+    assert app.llm_call_with_fallback(client, ["typo-model", "b", "c"], messages=[])[1] == "c"
+
+
+def test_fallback_does_not_hide_bad_requests():
+    client = ModelClient({"a": BadRequest("invalid argument")}, default=text_msg("never"))
+    with pytest.raises(BadRequest):
+        app.llm_call_with_fallback(client, ["a", "b"], messages=[])
+    assert client.models == ["a"]
+
+
+def test_when_every_model_is_busy_it_waits_instead_of_failing(monkeypatch):
+    waits = []
+    monkeypatch.setattr(app.time, "sleep", waits.append)
+    client = ModelClient({"a": [RateLimit("429 retry in 4s"), RateLimit("429 retry in 4s"), text_msg("ok")],
+                          "b": RateLimit("429 retry in 9s")})
+    resp, used = app.llm_call_with_fallback(client, ["a", "b"], messages=[])
+    assert used == "a" and waits == [5.0] and resp.choices[0].message.content == "ok"
+
+
+def test_agent_falls_back_mid_conversation_and_reports_it(monkeypatch, isolated_logs):
+    first, backup = app.AGENT_MODELS[0], app.AGENT_MODELS[1]
+    client = ModelClient({first: RateLimit("429 PerDay quota"),
+                          backup: [tool_msg(("search_experiences", {"region": "Batroun"})), text_msg("D05 and D20.")]})
+    turn = app.run_agent("What is in Batroun?", client=client, use_llm_router=False)
+    assert turn.reply == "D05 and D20." and turn.model == backup and not turn.error
+    assert client.models == [first, backup, backup]  # the backup keeps the whole reply once it starts
+    titles = [m.metadata["title"] for m in app.trace_messages(turn)]
+    assert f"🔁 Answered by backup model {backup}" in titles
+
+
+def test_quota_message_only_when_every_model_is_out(monkeypatch):
+    client = ModelClient({}, default=RateLimit("429 PerDay quota"))
+    turn = app.run_agent("hi", client=client, use_llm_router=False)
+    assert turn.reply == app.BUSY_REPLY and set(client.models) == set(app.AGENT_MODELS)
