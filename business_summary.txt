@@ -1,0 +1,107 @@
+DOUROUB LEBANON — Find Your Way to the Authentic Lebanon
+
+ABOUT US
+Douroub Lebanon ("douroub" means "paths" in Arabic) is a Lebanese tourism agency that connects locals, the Lebanese diaspora, and international visitors with authentic experiences across the country: village visits, nature outings and hikes, traditional food and craft workshops, coastal discoveries, heritage days, and overnight stays with local hosts.
+
+Douroub Lebanon was founded by Sara, who grew up spending summers in her grandparents' village in the Chouf. Friends visiting from abroad kept asking her the same questions: where to go beyond the usual postcard spots, who to call, and how to spend a day that felt real rather than packaged. Douroub Lebanon grew out of those conversations. Today we work with a network of local guides, family-run guesthouses, home cooks, artisans, and small producers from the north to the south of the country.
+
+MISSION
+To connect visitors with Lebanese culture, landscapes, village life, food traditions, and local communities — making Lebanon's hidden gems easier to discover while making sure that the value of every visit stays with the guides, hosts, guesthouses, and small businesses who make it possible.
+
+WHO WE SERVE
+- International travellers visiting Lebanon for the first time who want more than the standard sightseeing circuit.
+- Members of the Lebanese diaspora reconnecting with the country, its villages, and its food.
+- Residents of Lebanon looking for a weekend outing, a family day, or a new region to explore.
+- Couples, families, friend groups, and solo travellers. Most experiences welcome small groups; each experience lists its own minimum and maximum group size.
+
+SERVICES
+1. Curated village and town visits — guided walks through historic towns, souks, and villages, led by people who live there.
+2. Nature outings and hikes — guided trails in cedar, oak, and pine forests, valleys, waterfalls, and caves, from gentle walks to full-day hikes.
+3. Food and drink experiences — hands-on cooking in village homes, street food walks, sweets tastings, and vineyard visits.
+4. Heritage days — full-day visits to major archaeological and historic sites with licensed heritage guides.
+5. Craft workshops — hands-on time with traditional artisans such as potters.
+6. Coastal and sea experiences — relaxed seaside towns and guided sea kayaking.
+7. Seasonal adventures — winter snowshoeing in the cedars.
+8. Overnight stays — a night in a mountain village guesthouse with local hosts.
+9. Personalized recommendations and itinerary suggestions — our AI concierge, Alaa, can suggest a combination of experiences built around a visitor's interests, budget, group size, and number of days, and the team can then refine it.
+
+EXPERIENCE CATALOG
+All prices are in US dollars and are per person. The full catalog, with group sizes, inclusions, seasons, and notes for every experience, is maintained in experiences.csv, which is the source of truth for catalog facts.
+
+Culture
+- D01 Stories of Deir el Qamar (Chouf, Culture) — half day — $25 per person
+- D12 Tripoli Old Souks and Sweets (Tripoli, Culture) — half day — $27 per person
+- D14 Sidon Sea Castle and Old Souk (Sidon, Culture) — half day — $26 per person
+
+History and heritage
+- D04 Heritage Through Time (Byblos, History) — full day — $55 per person
+- D08 Baalbek: City of the Sun (Bekaa, History) — full day — $60 per person
+- D13 Tyre: Ruins by the Sea (Tyre, History) — full day — $52 per person
+- D18 Beiteddine Palace and Shouf Cedars (Chouf, History) — full day — $58 per person
+
+Nature
+- D02 Chouf Nature Escape (Chouf, Nature) — half day — $30 per person
+- D10 Qadisha Valley Monasteries Hike (Qadisha Valley, Nature) — full day — $50 per person
+- D11 Cedars of God and Bcharre (Bcharre, Nature) — half day — $32 per person
+- D15 Jeita and Harissa Discovery (Keserwan, Nature) — half day — $40 per person
+- D17 Jezzine Waterfall and Pine Forest (Jezzine, Nature) — half day — $29 per person
+
+Food and drink
+- D03 Taste of the Village (Chouf, Food) — 2-3 hours — $35 per person
+- D07 Beirut Street Food Walk (Beirut, Food) — 2-3 hours — $30 per person
+- D09 Zahle Vineyards and Arak Tasting (Bekaa, Food) — half day — $45 per person
+
+Craft
+- D16 Pottery and Craft Workshop (Metn, Craft) — 2-3 hours — $38 per person
+
+Coast
+- D05 Coastal Charms of Batroun (Batroun, Coast) — half day — $28 per person
+
+Adventure
+- D19 Snowshoeing in the Cedars (Bcharre, Adventure) — half day — $45 per person
+- D20 Batroun Sunset Kayak (Batroun, Adventure) — 2-3 hours — $40 per person
+
+Overnight
+- D06 Mountain Village Retreat (Qadisha Valley, Overnight) — overnight — $85 per person
+
+SEASONS
+Most experiences run year-round. Some are seasonal: D02, D10, and D18 run from spring to autumn (April to November); D20 runs from late spring to early autumn (May to October); and D19 runs only in winter (December to March) and depends on snow. Seasonal notes for each experience are listed in the catalog. Exact dates are always confirmed by the team.
+
+TEAM
+- Sara — Founder and Experience Curator. Sara designs every experience together with local hosts, visits each partner in person, and keeps the catalog authentic. She is the reason every experience starts with a person, not a monument.
+- Ahmad — Local Partnerships and Operations. Ahmad built and maintains our network of guides, guesthouses, cooks, and artisans across the regions we cover, and handles the practical side of each experience.
+- Khaled — Guest Experience Coordinator. Khaled reviews every inquiry that comes in, follows up with visitors by email, and confirms dates, availability, final price, and arrangements.
+- Alaa — AI Concierge. Alaa is available at any time to answer questions about Douroub Lebanon, recommend and compare experiences, suggest itineraries, and record inquiries and feedback so that Khaled and the team can follow up.
+
+WHAT MAKES US DIFFERENT
+- Locally hosted: every experience is led or hosted by people from the place you are visiting.
+- Personalized: recommendations are matched to each visitor's interests, budget, pace, group size, and trip length — not a one-size-fits-all tour.
+- Honest: we tell visitors clearly what is included, what is not, and what still needs to be confirmed, instead of promising things we have not checked.
+- Community-first: we work with small, family-run partners so that tourism income stays in the villages and towns we visit.
+- Whole-country coverage: from Tripoli and the Qadisha Valley in the north, through Mount Lebanon and the Bekaa, to Sidon, Tyre, and Jezzine in the south.
+
+HOW BOOKING WORKS
+1. Explore: ask Alaa about experiences, compare options, or request a suggested itinerary.
+2. Send an inquiry: share your name, email, the experiences you are interested in, preferred dates, and group size. Alaa records it for the team.
+3. Confirmation by the team: Khaled reviews the inquiry and replies by email to confirm availability, dates, final price, and arrangements.
+4. Your experience is reserved only after the team confirms it by email.
+Douroub Lebanon accepts inquiries, not instant bookings. Recording an inquiry is never a confirmed reservation. We recommend sending inquiries at least one week before the desired date, especially for weekends, overnight stays, and seasonal experiences.
+
+PRICING
+Prices are in US dollars and are per person. A group price is the per-person price multiplied by the number of participants. Each experience lists what is included (for example a local guide, tastings, or equipment). Site entry tickets are only included where the catalog says so. No discounts, promotions, or package deals are currently offered.
+
+DETAILS CONFIRMED BY OUR TEAM ON REQUEST
+Some details depend on the date, the group, and the partner, so we do not publish them as fixed facts. Alaa will not guess about these; instead it records the question so that the team can answer it personally:
+- Availability on specific dates
+- Transport and pickup arrangements
+- Accessibility and mobility suitability
+- Dietary and allergy suitability
+- Safety arrangements for outdoor and water activities
+- Opening hours of sites and travel times between locations
+- Payment methods, refunds, and cancellation terms
+
+PRIVACY
+To follow up on an inquiry we only need a name, an email address, and a description of what the visitor is interested in. Visitors should not share passport numbers, payment details, or health records with the concierge.
+
+LANGUAGES
+Experiences are offered in Arabic, English, and French.
