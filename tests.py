@@ -850,7 +850,10 @@ def test_build_demo_constructs_the_branded_page():
     assert isinstance(demo, app.gr.Blocks) and isinstance(demo.chat, app.gr.ChatInterface)
     reflect_box, trace_box = demo.chat.additional_inputs
     assert reflect_box.value is True and trace_box.value is True  # settings rendered on top, both on
-    assert "Douroub Lebanon" in app.HEADER_HTML and "دروب لبنان" in app.HEADER_HTML
+    assert "Douroub Lebanon" in app.SIDE_HTML and "دروب لبنان" in app.SIDE_HTML and 'class="db-map"' in app.SIDE_HTML
+    assert app.LEBANON_MAP_SVG.count('class="db-place"') == 14 and "db-flag" in app.SIDE_HTML
+    assert set(app.REGION_CHIPS) == set(app.load_catalog().region)  # one chip per catalog region
+    assert "fill-opacity" in app.CSS and "data:image/svg+xml" in app.CSS  # faint cedar watermark
     assert "doesn't reserve a spot" in app.FOOTNOTE_HTML and "passport" in app.FOOTNOTE_HTML
     assert set(app.LAUNCH_OPTIONS) == {"theme", "css", "head", "footer_links"}
     assert len(app.EXAMPLES) >= 5 and app._in_notebook() is False

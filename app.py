@@ -1862,8 +1862,10 @@ def evaluate_reflection(cases=REFLECTION_EVAL_CASES, use_llm: bool = True, clien
     return pd.DataFrame(rows)
 
 
-import gradio as gr
 from collections import OrderedDict
+from urllib.parse import quote
+
+import gradio as gr
 
 APP_TITLE = "Douroub Lebanon: chat with Alaa"
 EXAMPLES = [
@@ -1964,85 +1966,131 @@ THEME = gr.themes.Soft(
 )
 HEAD = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link href="https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@500;600&display=swap" rel="stylesheet">')
+
+# Map of Lebanon: outline from Natural Earth (public domain), projected with an equirectangular projection at
+# 33.9° N. Waypoints sit at each catalog region's real coordinates; dotted lines join them as walking trails.
+LEBANON_MAP_SVG = (
+    '''<svg class="db-map" viewBox="-62 0 452 420" role="img" aria-label="Map of Lebanon with the regions where Douroub Lebanon offers experiences, linked by walking trails"><path class="db-land" d="M15.1,397.9 L15.1,397.5 L15.4,396.5 L14.5,396.6 L14.2,396.3 L14.2,395.7 L14.0,395.0 L15.2,392.3 L17.0,389.6 L19.2,387.5 L23.6,385.6 L25.0,383.2 L26.2,380.4 L27.6,378.4 L26.4,376.8 L27.6,376.6 L28.2,376.9 L29.0,378.4 L35.0,365.3 L35.8,358.1 L31.7,352.0 L36.0,348.8 L39.0,344.3 L42.7,333.9 L43.2,330.7 L43.3,324.2 L44.1,320.9 L47.7,315.4 L49.0,312.4 L48.2,309.4 L58.5,301.4 L63.8,295.9 L66.0,288.8 L66.4,285.7 L74.0,264.8 L72.8,263.2 L75.9,260.5 L78.2,250.6 L81.6,248.4 L81.4,245.6 L89.3,226.2 L90.1,221.5 L90.4,211.5 L90.5,209.7 L89.8,206.9 L88.6,204.6 L87.9,202.6 L89.0,200.7 L91.2,200.0 L93.8,200.4 L96.1,201.4 L97.3,202.5 L98.7,202.5 L100.6,201.4 L103.4,201.6 L105.3,201.8 L108.2,200.7 L109.5,199.1 L111.4,194.3 L112.4,192.4 L112.5,191.4 L112.2,191.0 L110.9,190.9 L112.6,188.9 L115.0,183.1 L116.5,180.8 L117.8,180.3 L121.1,180.2 L121.9,179.3 L121.8,177.1 L120.9,175.9 L119.8,175.3 L119.2,174.4 L119.2,168.5 L122.4,158.0 L123.3,150.5 L122.7,147.7 L119.8,142.4 L119.2,139.0 L119.2,130.8 L119.8,129.1 L122.7,127.0 L123.3,125.8 L123.4,118.2 L124.3,110.7 L126.8,104.3 L131.5,100.3 L134.9,103.1 L138.1,98.1 L141.2,90.5 L143.8,85.5 L154.9,79.5 L158.4,74.8 L154.7,69.0 L154.7,67.5 L158.4,68.4 L174.3,64.3 L184.9,54.2 L188.1,51.9 L190.2,49.8 L191.3,46.4 L191.5,35.1 L190.9,30.0 L189.7,25.8 L187.5,23.1 L190.1,23.0 L191.8,23.4 L193.3,24.1 L196.8,26.9 L201.1,28.2 L205.7,28.3 L210.9,27.6 L215.9,27.9 L224.6,28.6 L225.5,28.3 L227.9,26.8 L229.1,26.5 L230.1,27.0 L232.5,28.7 L233.7,29.2 L245.7,28.5 L247.7,27.6 L249.5,25.6 L250.3,23.4 L250.3,18.7 L251.0,16.9 L255.1,14.0 L258.1,15.9 L262.8,24.4 L266.8,28.0 L271.5,29.6 L276.5,29.5 L281.3,28.0 L280.5,35.5 L279.1,36.7 L277.0,34.9 L274.0,34.1 L271.1,35.9 L270.7,38.8 L270.9,42.3 L270.0,46.1 L266.1,49.2 L260.7,52.1 L257.3,55.6 L259.3,59.4 L259.9,60.4 L260.4,60.6 L261.0,60.7 L261.5,60.6 L262.1,60.4 L265.9,59.3 L271.8,59.0 L277.2,59.4 L280.0,60.4 L280.0,60.4 L281.3,64.5 L283.2,67.6 L285.9,69.8 L289.3,71.3 L292.2,74.8 L293.6,75.8 L295.1,75.3 L298.3,77.5 L299.3,79.7 L299.2,82.3 L298.5,86.3 L297.9,87.9 L297.2,89.0 L296.6,90.3 L296.4,92.3 L297.0,94.2 L297.9,96.1 L302.3,102.1 L304.4,104.4 L305.8,105.0 L307.3,104.9 L308.6,105.2 L309.6,107.1 L309.2,110.2 L307.3,112.9 L305.8,116.0 L306.7,120.5 L308.0,123.9 L312.8,128.7 L313.9,131.1 L314.0,131.3 L308.4,137.5 L303.8,145.3 L294.8,152.9 L290.9,157.8 L289.8,161.2 L289.4,164.0 L288.3,166.3 L285.0,167.9 L282.3,168.0 L278.0,166.4 L275.7,166.2 L271.5,168.4 L264.9,176.8 L257.0,183.8 L253.8,187.7 L251.1,192.0 L246.8,200.6 L247.2,201.5 L248.4,203.8 L249.7,205.3 L255.6,209.9 L263.4,211.2 L266.8,213.3 L267.2,218.3 L264.8,221.4 L261.0,222.1 L253.5,220.3 L243.2,215.2 L239.8,214.5 L236.7,215.7 L234.0,218.0 L230.7,219.9 L226.6,220.0 L225.0,219.0 L222.4,215.8 L221.1,215.0 L214.0,219.4 L210.5,220.9 L206.8,221.9 L203.6,223.2 L201.6,225.8 L198.9,230.9 L192.3,236.6 L189.6,240.7 L188.4,243.4 L184.7,246.8 L183.3,249.0 L183.0,251.0 L183.5,255.3 L183.0,257.6 L182.1,258.6 L179.5,259.6 L178.7,260.4 L177.9,265.5 L180.5,267.2 L184.9,268.0 L189.6,270.6 L192.4,271.4 L196.1,273.3 L199.5,275.8 L201.2,278.5 L200.6,282.9 L197.5,286.6 L193.4,289.3 L189.6,291.0 L184.9,291.0 L180.2,292.5 L178.0,295.7 L180.7,300.6 L177.5,308.2 L171.3,313.5 L167.6,315.7 L162.7,318.7 L157.9,321.6 L154.8,325.3 L150.8,333.3 L147.6,337.0 L145.2,338.5 L142.4,339.7 L139.6,340.6 L136.9,340.8 L133.4,341.8 L125.8,349.8 L124.2,352.8 L120.0,353.3 L117.8,354.5 L117.4,357.8 L114.7,360.6 L114.7,360.6 L114.6,361.6 L114.5,361.6 L113.4,360.6 L113.4,360.6 L113.3,360.6 L110.8,358.7 L107.2,352.9 L106.0,351.5 L103.7,351.8 L102.4,354.1 L101.2,357.3 L99.4,360.6 L97.8,365.9 L97.4,377.8 L96.3,383.9 L94.6,387.9 L90.9,394.6 L89.9,398.3 L83.8,398.8 L74.2,403.0 L63.0,405.9 L60.3,405.6 L58.5,403.1 L57.1,400.3 L55.1,397.8 L52.9,396.0 L51.7,395.5 L50.7,395.0 L48.3,395.0 L40.9,397.4 L39.5,397.3 L36.6,396.6 L35.4,396.5 L34.2,397.0 L31.9,398.7 L31.1,399.1 L15.1,397.9 Z"/><path class="db-trail-line" d="M33.2,354.2 C39.0,342.5 55.2,295.0 68.1,284.1 C81.0,273.2 104.4,294.2 110.8,288.9 C117.1,283.5 109.0,266.1 106.2,252.1 C103.4,238.1 91.6,214.7 94.2,204.8 C96.8,194.9 116.9,201.7 121.8,192.6 C126.6,183.4 122.8,162.5 123.3,150.1 C123.9,137.6 119.2,130.5 125.3,117.9 C131.5,105.3 154.6,81.7 160.4,74.4"/><path class="db-trail-line" d="M121.8,192.6 C123.7,194.1 125.0,198.1 133.7,201.9 C142.4,205.8 157.0,219.9 174.0,215.9 C191.0,211.8 225.3,184.0 235.6,177.7"/><path class="db-trail-line" d="M125.3,117.9 C134.2,116.1 166.9,106.9 178.6,107.1 C190.3,107.2 192.9,116.9 195.7,118.8"/><g class="db-place"><title>Tripoli</title><circle cx="160.4" cy="74.4" r="5"/><text x="170.4" y="79.4" text-anchor="start">Tripoli</text></g><g class="db-place"><title>Qadisha</title><circle cx="178.6" cy="107.1" r="5"/><text x="188.6" y="109.1" text-anchor="start">Qadisha</text></g><g class="db-place"><title>Bcharre</title><circle cx="195.7" cy="118.8" r="5"/><text x="205.7" y="128.8" text-anchor="start">Bcharre</text></g><g class="db-place"><title>Batroun</title><circle cx="125.3" cy="117.9" r="5"/><text x="115.3" y="122.9" text-anchor="end">Batroun</text></g><g class="db-place"><title>Byblos</title><circle cx="123.3" cy="150.1" r="5"/><text x="113.3" y="155.1" text-anchor="end">Byblos</text></g><g class="db-place"><title>Jeita</title><circle cx="121.8" cy="192.6" r="5"/><text x="111.8" y="190.6" text-anchor="end">Jeita</text></g><g class="db-place"><title>Beirut</title><circle cx="94.2" cy="204.8" r="5"/><text x="84.2" y="214.8" text-anchor="end">Beirut</text></g><g class="db-place"><title>Metn</title><circle cx="133.7" cy="201.9" r="5"/><text x="143.7" y="206.9" text-anchor="start">Metn</text></g><g class="db-place"><title>Zahle</title><circle cx="174.0" cy="215.9" r="5"/><text x="184.0" y="223.9" text-anchor="start">Zahle</text></g><g class="db-place"><title>Baalbek</title><circle cx="235.6" cy="177.7" r="5"/><text x="245.6" y="182.7" text-anchor="start">Baalbek</text></g><g class="db-place"><title>Chouf</title><circle cx="106.2" cy="252.1" r="5"/><text x="116.2" y="257.1" text-anchor="start">Chouf</text></g><g class="db-place"><title>Jezzine</title><circle cx="110.8" cy="288.9" r="5"/><text x="120.8" y="293.9" text-anchor="start">Jezzine</text></g><g class="db-place"><title>Sidon</title><circle cx="68.1" cy="284.1" r="5"/><text x="58.1" y="289.1" text-anchor="end">Sidon</text></g><g class="db-place"><title>Tyre</title><circle cx="33.2" cy="354.2" r="5"/><text x="23.2" y="359.2" text-anchor="end">Tyre</text></g></svg>''')
+# Cedar from the Lebanese flag: flat, layered branches with upturned tips. Used as a faint page watermark.
+CEDAR_PATH = "M120,0 Q126,10 134,20 L106,20 Q114,10 120,0 Z M120,10 Q138.0,14.05 150,13.24 Q147.6,34 136.5,35 Q127.5,39 120,34 Q112.5,39 103.5,35 Q92.4,34 90,13.24 Q102.0,14.05 120,10 Z M120,32 Q152.4,36.05 174,35.24 Q169.68,56 149.7,57 Q133.5,61 120,56 Q106.5,61 90.3,57 Q70.32,56 66,35.24 Q87.6,36.05 120,32 Z M120,54 Q164.4,58.05 194,57.24 Q188.07999999999998,78 160.7,79 Q138.5,83 120,78 Q101.5,83 79.3,79 Q51.92,78 46,57.24 Q75.6,58.05 120,54 Z M120,76 Q174.0,80.05 210,79.24 Q202.8,100 169.5,101 Q142.5,105 120,100 Q97.5,105 70.5,101 Q37.2,100 30,79.24 Q66.0,80.05 120,76 Z M120,98 Q181.2,102.05 222,101.24 Q213.84,122 176.1,123 Q145.5,127 120,122 Q94.5,127 63.9,123 Q26.159999999999997,122 18,101.24 Q58.800000000000004,102.05 120,98 Z M120,120 Q186.0,124.05 230,123.24 Q221.2,144 180.5,145 Q147.5,149 120,144 Q92.5,149 59.49999999999999,145 Q18.799999999999997,144 10,123.24 Q54.0,124.05 120,120 Z M120,142 Q188.39999999999998,146.05 234,145.24 Q224.88,166 182.7,167 Q148.5,171 120,166 Q91.5,171 57.3,167 Q15.11999999999999,166 6,145.24 Q51.60000000000001,146.05 120,142 Z M112,166 L128,166 L131,208 L109,208 Z"
+_CEDAR_URI = ("data:image/svg+xml," + quote(
+    f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 212"><path fill="#1E4D3F" fill-opacity="0.07" d="{CEDAR_PATH}"/></svg>'))
+REGION_CHIPS = ["Beirut", "Byblos", "Batroun", "Tripoli", "Bcharre", "Qadisha Valley", "Keserwan", "Metn", "Chouf",
+                "Jezzine", "Sidon", "Tyre", "Bekaa"]
+
 CSS = """
-.gradio-container { max-width: 980px !important; margin: 0 auto !important; }
-.db-header { background: #1E4D3F; color: #F4F7F3; border-radius: 18px; padding: 28px 32px 6px; }
-.db-brand { display: flex; justify-content: space-between; align-items: baseline; gap: 8px 20px; flex-wrap: wrap; }
+.gradio-container { max-width: 1440px !important; margin: 0 auto !important; }
+#db-layout::after { content: ""; position: fixed; right: -90px; bottom: -40px; width: 520px; height: 460px;
+                    background: url('CEDAR_URI') no-repeat right bottom / contain; pointer-events: none; z-index: 0; }
+#db-side, #db-main { position: relative; z-index: 1; }
+#db-layout { gap: 24px; align-items: flex-start; }
+#db-side { position: sticky !important; top: 16px; gap: 12px; max-height: calc(100vh - 32px); overflow-y: auto;
+            overflow-x: hidden; flex-wrap: nowrap !important;
+            scrollbar-width: thin; }
+.html-container:has(.db-panel), .html-container:has(.db-footnote) { padding: 0 !important; }
+.db-panel { background: #1E4D3F; color: #F4F7F3; border-radius: 18px; overflow: hidden; }
+.db-flag { display: flex; flex-direction: column; height: 18px; }
+.db-flag span { flex: 1; background: #ED1C24; }
+.db-flag span:nth-child(2) { flex: 2; background: #FFFFFF; }
+.db-panel-body { padding: 20px 26px 16px; }
 .db-title, .db-title-ar { font-family: 'Reem Kufi', 'IBM Plex Sans Arabic', sans-serif; font-weight: 600;
                           margin: 0; color: #FFFFFF; line-height: 1.15; }
-.db-title { font-size: clamp(28px, 4.2vw, 42px); }
-.db-title-ar { font-size: clamp(26px, 3.8vw, 38px); color: #CFE1D6; }
-.db-lede { margin: 12px 0 0; max-width: 62ch; font-size: 16px; line-height: 1.6; color: #D8E6DD; }
-.db-trail { display: block; width: 100%; height: auto; margin-top: 10px; }
+.db-title { font-size: clamp(30px, 2.6vw, 40px); }
+.db-title-ar { font-size: clamp(24px, 2vw, 32px); color: #CFE1D6; margin-top: 2px; text-align: left; }
+.db-lede { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: #D8E6DD; }
+.db-map { display: block; width: 100%; height: auto; max-height: min(300px, 31vh); margin: 8px auto 0; }
+.db-land { fill: #245F47; stroke: #7FB399; stroke-width: 1.4; stroke-linejoin: round; }
+.db-trail-line { fill: none; stroke: #A9D0BB; stroke-width: 2.4; stroke-dasharray: 0.5 7; stroke-linecap: round; }
+.db-place circle { fill: #B5562F; stroke: #1E4D3F; stroke-width: 2.5; }
+.db-place text { fill: #E6F0EA; font-size: 15px; font-family: 'IBM Plex Sans Arabic', sans-serif; }
+.db-map-caption { margin: 0; font-size: 13.5px; color: #B9D3C5; }
+#db-regions { flex-wrap: wrap !important; flex-direction: row !important; gap: 6px; background: transparent; border: none; padding: 0; }
+#db-regions button { flex: 0 0 auto; min-width: 0; width: auto; padding: 4px 11px; font-size: 13.5px; font-weight: 500;
+                     background: #FFFFFF; color: #1E4D3F; border: 1px solid #C9D9CF; border-radius: 999px; box-shadow: none; }
+#db-regions button:hover { background: #E7F0EA; border-color: #2F7658; }
 #db-settings { background: transparent; border: none; gap: 12px; }
-#db-settings > div { border-radius: 14px; }
-.db-footnote { font-size: 13.5px; line-height: 1.55; color: #4B6158; text-align: center;
-               max-width: 72ch; margin: 4px auto 20px; }
+#db-chat { height: calc(100vh - 250px) !important; min-height: 460px; }
+.db-footnote { font-size: 13px; line-height: 1.5; color: #B9D3C5; margin: 12px 0 0; padding-top: 12px;
+                border-top: 1px solid rgba(169, 208, 187, .28); }
 .message-content p, .message-content li { unicode-bidi: plaintext; text-align: start; }
+#db-chat .placeholder-content { padding: 0 20px; }
+#db-chat .bubble-wrap { padding-top: 44px !important; }  /* room for the clear-chat icon above the first message */
 #db-chat .example { background: #F4F8F5; border: 1px solid #D3E0D7; border-radius: 12px; padding: 12px 16px;
                     text-align: start; transition: border-color .15s, background .15s; }
 #db-chat .example:hover { background: #EAF2ED; border-color: #2F7658; }
-#db-chat .example:focus-visible { outline: 2px solid #2F6E8F; outline-offset: 2px; }
+#db-chat .example:focus-visible, #db-regions button:focus-visible { outline: 2px solid #2F6E8F; outline-offset: 2px; }
 @media (prefers-color-scheme: dark) {
   #db-chat .example { background: #1A2C26; border-color: #2B443B; }
   #db-chat .example:hover { background: #20362F; border-color: #4F9374; }
+  #db-regions button { background: #1A2C26; color: #D6E8DE; border-color: #2B443B; }
 }
-.html-container:has(.db-header), .html-container:has(.db-footnote) { padding: 0 !important; }
-#db-chat .placeholder-content { padding: 0 20px; }
-@media (max-width: 640px) {
-  .db-header { padding: 22px 20px 4px; border-radius: 14px; }
-  .db-lede { font-size: 15px; line-height: 1.55; }
+@media (max-height: 760px) and (min-width: 901px) {
+  .db-map { max-height: 22vh; }
+  .db-lede { font-size: 14px; }
+  .db-title { font-size: 30px; }
+}
+@media (max-width: 900px) {
+  #db-layout::after { display: none; }
+  #db-side { position: relative; max-height: none; overflow: visible; }
+  .db-map, .db-map-caption, #db-regions { display: none !important; }
+  #db-chat { height: 62vh !important; }
   #db-chat .example:nth-child(n+5) { display: none; }
+  .db-panel-body { padding: 20px 20px 16px; }
 }
-@media (prefers-color-scheme: dark) { .db-footnote { color: #9DB5AA; } }
-"""
-HEADER_HTML = """
-<header class="db-header">
-  <div class="db-brand">
-    <h1 class="db-title">Douroub Lebanon</h1>
-    <span class="db-title-ar" lang="ar" dir="rtl">دروب لبنان</span>
-  </div>
-  <p class="db-lede">Alaa, our AI concierge, knows our village walks, hikes, food workshops, and heritage days
-  across Lebanon. Ask for ideas, compare experiences, plan a day or a weekend within your budget, or send a
-  request to our team, in English, Arabic, or French.</p>
-  <svg class="db-trail" viewBox="0 0 1200 64" role="img" aria-label="A winding trail with waypoints">
-    <path d="M0,40 C110,12 210,56 330,34 S540,8 660,34 S880,60 1000,30 S1150,16 1200,28"
-          fill="none" stroke="#A9D0BB" stroke-width="4" stroke-dasharray="0.5 13" stroke-linecap="round"/>
-    <circle cx="330" cy="34" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
-    <circle cx="660" cy="34" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
-    <circle cx="1000" cy="30" r="9" fill="#B5562F" stroke="#1E4D3F" stroke-width="4"/>
-  </svg>
-</header>
-"""
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+""".replace("CEDAR_URI", _CEDAR_URI)
 FOOTNOTE_HTML = """
 <p class="db-footnote">Prices are in USD per person. Sending a request doesn't reserve a spot: Khaled from our
 team confirms availability, dates, and the final price by email. Please don't share passport, payment, or health
 details in this chat.</p>
 """
+SIDE_HTML = f"""
+<section class="db-panel">
+  <div class="db-flag" aria-hidden="true"><span></span><span></span><span></span></div>
+  <div class="db-panel-body">
+    <h1 class="db-title">Douroub Lebanon</h1>
+    <p class="db-title-ar" lang="ar" dir="rtl">دروب لبنان</p>
+    <p class="db-lede">Alaa, our AI concierge, helps you find village walks, hikes, food workshops, and heritage
+    days across Lebanon, plan them within your budget, and send a request to our team. Ask in English, Arabic,
+    or French.</p>
+    {LEBANON_MAP_SVG}
+    <p class="db-map-caption">Our experiences, linked by trails. Pick a region below to ask about it.</p>
+    {FOOTNOTE_HTML}
+  </div>
+</section>
+"""
+
 LAUNCH_OPTIONS = {"theme": THEME, "css": CSS, "head": HEAD, "footer_links": ["gradio"]}
 
 
 def build_demo() -> gr.Blocks:
-    """Branded page: header, settings on top, the ChatInterface, and the booking notice."""
+    """Two-column page on wide screens: brand panel with the map of Lebanon on the left, settings and chat on
+    the right. On narrow screens the columns stack and the map is hidden."""
     with gr.Blocks(title=APP_TITLE, fill_height=True) as demo:
-        gr.HTML(HEADER_HTML, padding=False)
-        with gr.Row(elem_id="db-settings", equal_height=True):
-            reflect_box = gr.Checkbox(value=True, label="Review replies before sending",
-                                      info="Alaa checks each draft against its rules and fixes mistakes.")
-            trace_box = gr.Checkbox(value=True, label="Show how Alaa works",
-                                    info="See the route, tool calls, and review behind each reply.")
-        demo.chat = gr.ChatInterface(
-            fn=respond,
-            additional_inputs=[reflect_box, trace_box],  # already placed above, so they stay on top
-            examples=[[e] for e in EXAMPLES],  # question only: shown as cards; the current settings apply
-            cache_examples=False,
-            chatbot=gr.Chatbot(height=520, show_label=False, elem_id="db-chat",
-                               placeholder="### Ahla w sahla!\nWhere would you like to go? Pick an idea "
-                                           "below, or ask in English, Arabic, or French."),
-            textbox=gr.Textbox(placeholder="Ask Alaa about an experience, a price, or a plan…", max_lines=6),
-            fill_height=True,
-        )
-        gr.HTML(FOOTNOTE_HTML, padding=False)
+        with gr.Row(elem_id="db-layout", equal_height=False):
+            with gr.Column(scale=4, min_width=340, elem_id="db-side"):
+                gr.HTML(SIDE_HTML, padding=False)
+                with gr.Row(elem_id="db-regions"):
+                    region_buttons = [gr.Button(r, size="sm") for r in REGION_CHIPS]
+            with gr.Column(scale=7, min_width=340, elem_id="db-main"):
+                with gr.Row(elem_id="db-settings", equal_height=True):
+                    reflect_box = gr.Checkbox(value=True, label="Review replies before sending",
+                                              info="Alaa checks each draft against its rules and fixes mistakes.")
+                    trace_box = gr.Checkbox(value=True, label="Show how Alaa works",
+                                            info="See the route, tool calls, and review behind each reply.")
+                demo.chat = gr.ChatInterface(
+                    fn=respond,
+                    additional_inputs=[reflect_box, trace_box],  # already placed above, so they stay on top
+                    examples=[[e] for e in EXAMPLES],  # question only: shown as cards; current settings apply
+                    cache_examples=False,
+                    chatbot=gr.Chatbot(show_label=False, elem_id="db-chat", buttons=["copy"],
+                                       placeholder="### Ahla w sahla!\nWhere would you like to go? Pick an idea "
+                                                   "below, or ask in English, Arabic, or French."),
+                    textbox=gr.Textbox(placeholder="Ask Alaa about an experience, a price, or a plan…", max_lines=6),
+                    fill_height=True,
+                )
+        for button, region in zip(region_buttons, REGION_CHIPS):  # a region chip drafts a question to send
+            button.click(lambda r=region: f"What experiences do you have in {r}?", None, demo.chat.textbox)
     return demo
 
 
