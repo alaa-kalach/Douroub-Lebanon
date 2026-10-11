@@ -1256,13 +1256,32 @@ class Session:
         return "\n".join(lines)
 
 
+def message_text(content) -> str:
+    """Plain text of a message. OpenAI-style history uses a string; Gradio 6 sends a list of parts such as
+    [{"type": "text", "text": "..."}]; files and components carry no text and are skipped."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        return content.get("text", "") if content.get("type", "text") == "text" else ""
+    if isinstance(content, (list, tuple)):
+        return "\n".join(t for t in (message_text(part) for part in content) if t)
+    return ""
+
+
 def trim_history(history, limit: int = HISTORY_LIMIT) -> list:
-    """Keep the last `limit` user/assistant text messages (Gradio 'messages' format or OpenAI format)."""
+    """Keep the last `limit` user/assistant text messages as plain strings.
+
+    Accepts OpenAI-style or Gradio history. Messages carrying a metadata title are the app's
+    route/tool/reflection trace panels, not things Alaa said, so they are left out."""
     clean = []
     for m in history or []:
-        role, content = m.get("role"), m.get("content")
-        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            clean.append({"role": role, "content": content})
+        if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
+            continue
+        if (m.get("metadata") or {}).get("title"):
+            continue
+        text = message_text(m.get("content")).strip()
+        if text:
+            clean.append({"role": m["role"], "content": text})
     return clean[-limit:]
 
 
@@ -1317,9 +1336,10 @@ def run_agent(message: str, history=None, session: Session = None, client=None, 
     start = time.perf_counter()
     session = session if session is not None else Session()
     client = client or get_client()
-    r = route(message, history, use_llm=use_llm_router, client=client)
+    recent = trim_history(history)  # plain-text history, whatever format it arrived in
+    r = route(message, recent, use_llm=use_llm_router, client=client)
     messages = ([{"role": "system", "content": build_system_prompt(r, memory=session.summary())}]
-                + trim_history(history) + [{"role": "user", "content": message}])
+                + recent + [{"role": "user", "content": message}])
     events, reply, error, rounds = [], "", "", 0
     try:
         for rounds in range(1, MAX_TOOL_ROUNDS + 1):
@@ -1352,7 +1372,7 @@ def run_agent(message: str, history=None, session: Session = None, client=None, 
     session.turns += 1
     turn = AgentTurn(reply=reply, route=r, tool_events=events, rounds=rounds, error=error, draft=reply)
     if reflect and not error and "reflect_and_revise" in globals():
-        turn.reply, turn.reflection = reflect_and_revise(message, turn, session, history=history, client=client)
+        turn.reply, turn.reflection = reflect_and_revise(message, turn, session, history=recent, client=client)
     turn.latency_s = round(time.perf_counter() - start, 2)
     return turn
 
@@ -1814,3 +1834,121 @@ def evaluate_reflection(cases=REFLECTION_EVAL_CASES, use_llm: bool = True, clien
     finally:
         REFLECTION_MODE = saved_mode
     return pd.DataFrame(rows)
+
+
+import gradio as gr
+from collections import OrderedDict
+
+APP_TITLE = "Douroub Lebanon — Alaa, your travel concierge"
+APP_DESCRIPTION = """\
+**Ahla w sahla!** I'm Alaa, Douroub Lebanon's AI concierge. Ask me about village walks, hikes, food and craft \
+workshops, heritage days, and coastal experiences across Lebanon. I can compare options, plan a trip around your \
+budget, and pass your inquiry to our team.
+
+*Prices are in USD per person. Sending an inquiry is **not** a confirmed reservation: our team confirms \
+availability, dates, and the final price by email. Please don't share passport, payment, or health details.*\
+"""
+EXAMPLES = [
+    "What can I do in the Chouf for under $35 per person?",
+    "Compare D04 and D08 for a group of 4. Which is cheaper?",
+    "Plan 2 days for 2 people in July. We love nature and food, max $120 each.",
+    "I'd like to book the Batroun sunset kayak for 2 people next Saturday.",
+    "Is transport from Beirut included in the Baalbek day?",
+    "بدي زور طرابلس، شو بتقترح؟",
+]
+MAX_MESSAGE_CHARS = 2000
+MAX_SESSIONS = 500
+SESSIONS = OrderedDict()  # one Session per browser tab (Gradio session hash), least-recently-used first
+
+
+def get_session(request) -> Session:
+    key = getattr(request, "session_hash", None)
+    if not key:
+        return Session()  # API calls without a browser session get a fresh memory each time
+    if key not in SESSIONS:
+        SESSIONS[key] = Session()
+        while len(SESSIONS) > MAX_SESSIONS:
+            SESSIONS.popitem(last=False)
+    SESSIONS.move_to_end(key)
+    return SESSIONS[key]
+
+
+def trace_messages(turn: AgentTurn) -> list:
+    """Collapsible panels that show how the reply was produced: route, tool calls, reflection."""
+    r = turn.route
+    panels = [gr.ChatMessage(role="assistant", content=f"{r.reason or '-'} (method: {r.method})",
+                             metadata={"title": f"🧭 Route: {r.intent}" + (f" + {', '.join(r.secondary)}" if r.secondary else ""),
+                                       "status": "done"})]
+    for e in turn.tool_events:
+        res = e["result"]
+        key_facts = {k: res[k] for k in ("inquiry_id", "feedback_id", "total_matches", "feasible",
+                                         "estimated_total_per_person_usd", "error", "message") if k in res}
+        panels.append(gr.ChatMessage(
+            role="assistant",
+            content=f"**Arguments:** `{json.dumps(e['arguments'], ensure_ascii=False)}`\n\n"
+                    f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`",
+            metadata={"title": f"{'🛠️' if e['status'] == 'success' else '⚠️'} Tool: {e['tool']} ({e['status']})",
+                      "status": "done"}))
+    if turn.reflection:
+        rep = turn.reflection
+        body = (f"Method: {rep['method']} | LLM verdict: {rep.get('llm_verdict') or '-'} | "
+                f"issues: {', '.join(rep['failed_checks']) or 'none'}")
+        if rep["changed"]:
+            body += f"\n\n**Draft before reflection:**\n\n> {rep['draft'][:1200]}"
+        panels.append(gr.ChatMessage(role="assistant", content=body, metadata={
+            "title": f"🔍 Reflection: {'revised the draft' if rep['changed'] else 'draft approved'}", "status": "done"}))
+    return panels
+
+
+def respond(message: str, history: list, reflection_on: bool = True, show_trace: bool = True,
+            request: gr.Request = None):
+    """Gradio ChatInterface handler: one visitor message in, Alaa's reply (and optional trace) out."""
+    text = (message or "").strip()
+    if not text:
+        return "Ahla w sahla! What would you like to know about our experiences in Lebanon?"
+    if len(text) > MAX_MESSAGE_CHARS:
+        return f"That message is a bit long for me. Could you shorten it to under {MAX_MESSAGE_CHARS} characters?"
+    if not has_api_key():
+        return "The assistant is not configured yet (missing GEMINI_API_KEY). Please contact the site owner."
+    session = get_session(request)
+    try:
+        turn = run_agent(text, history, session, reflect=reflection_on)
+    except Exception as exc:  # last line of defence: the visitor always gets an answer
+        print(f"[APP] unexpected error: {type(exc).__name__}: {exc}")
+        return FALLBACK_REPLY
+    final = gr.ChatMessage(role="assistant", content=turn.reply)
+    return (trace_messages(turn) + [final]) if show_trace else turn.reply
+
+
+def build_demo() -> gr.ChatInterface:
+    return gr.ChatInterface(
+        fn=respond,
+        title=APP_TITLE,
+        description=APP_DESCRIPTION,
+        examples=[[e] for e in EXAMPLES],  # question only: shown as cards; the current settings apply
+        cache_examples=False,
+        additional_inputs=[
+            gr.Checkbox(value=True, label="Reflection check (Alaa reviews each draft before sending it)"),
+            gr.Checkbox(value=True, label="Show how Alaa works (route, tool calls, reflection)"),
+        ],
+        additional_inputs_accordion=gr.Accordion("Settings", open=False),
+        chatbot=gr.Chatbot(height=560, show_label=False,
+                           placeholder="Ask Alaa about experiences, prices, or a trip plan."),
+        textbox=gr.Textbox(placeholder="Type your message…", max_lines=6),
+        fill_height=True,
+    )
+
+
+THEME = gr.themes.Soft(primary_hue="green", secondary_hue="orange")
+
+
+def _in_notebook() -> bool:
+    try:
+        get_ipython  # noqa: F821 - defined only inside Jupyter/IPython
+        return True
+    except NameError:
+        return False
+
+
+if __name__ == "__main__" and not _in_notebook():  # `python app.py` locally or on Hugging Face Spaces
+    build_demo().launch(theme=THEME)

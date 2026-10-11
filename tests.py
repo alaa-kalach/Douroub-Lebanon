@@ -768,3 +768,77 @@ def test_live_reflection_fixes_planted_problems():
     results = app.evaluate_reflection(use_llm=True)
     print("\n" + results[["case", "detected", "method", "changed", "fixed", "passed"]].to_string())
     assert results.passed.sum() >= 7
+
+
+# ---------------------------------------------------------------- Phase 6: Gradio app
+GRADIO_HISTORY = [  # the exact shape Gradio 6 passes to ChatInterface functions
+    {"role": "user", "content": [{"type": "text", "text": "We are 3 people."}]},
+    {"role": "assistant", "metadata": {"title": "🧭 Route: GENERAL_QUESTION"}, "content": [{"type": "text", "text": "trace"}]},
+    {"role": "assistant", "content": [{"type": "text", "text": "Lovely, a group of 3!"}]},
+    {"role": "user", "content": [{"type": "file", "file": {"path": "photo.png"}}]},
+]
+
+
+def test_trim_history_reads_gradio_format_and_skips_trace_panels():
+    assert app.trim_history(GRADIO_HISTORY) == [{"role": "user", "content": "We are 3 people."},
+                                                {"role": "assistant", "content": "Lovely, a group of 3!"}]
+    assert app.message_text([{"type": "text", "text": "a"}, "b", {"type": "file"}]) == "a\nb"
+
+
+def test_agent_sends_gradio_history_as_plain_text():
+    client = ScriptedClient(text_msg("ok"))
+    app.run_agent("Plan 2 days", GRADIO_HISTORY, client=client, use_llm_router=False)
+    sent = client.requests[0]["messages"]
+    assert sent[1] == {"role": "user", "content": "We are 3 people."}
+    assert sent[2] == {"role": "assistant", "content": "Lovely, a group of 3!"} and len(sent) == 4
+
+
+def test_sessions_are_per_visitor_and_bounded(monkeypatch):
+    monkeypatch.setattr(app, "SESSIONS", app.OrderedDict())
+    monkeypatch.setattr(app, "MAX_SESSIONS", 3)
+    a1, a2 = app.get_session(SimpleNamespace(session_hash="a")), app.get_session(SimpleNamespace(session_hash="a"))
+    b = app.get_session(SimpleNamespace(session_hash="b"))
+    assert a1 is a2 and a1 is not b
+    assert app.get_session(None) is not app.get_session(None)
+    for key in "cde":
+        app.get_session(SimpleNamespace(session_hash=key))
+    assert list(app.SESSIONS) == ["c", "d", "e"]
+
+
+def test_respond_guards(monkeypatch):
+    assert "What would you like" in app.respond("   ", [])
+    assert "shorten" in app.respond("x" * (app.MAX_MESSAGE_CHARS + 1), [])
+    monkeypatch.setattr(app, "API_KEY", "")
+    assert "not configured" in app.respond("hello", [])
+
+
+def test_respond_returns_trace_panels_and_final_reply(monkeypatch, isolated_logs):
+    monkeypatch.setattr(app, "API_KEY", "test")
+    monkeypatch.setattr(app, "REFLECTION_MODE", "always")
+    client = ScriptedClient(
+        text_msg('{"intent": "LEAD_COLLECTION", "secondary": [], "reason": "booking"}'),
+        tool_msg(("record_customer_interest", {"email": "lina@example.com", "name": "Lina", "message": "D05 for 3 people"})),
+        text_msg("Saved! Reference {id}."), _review("ok"))
+    monkeypatch.setattr(app, "get_client", lambda: client)
+    out = app.respond("Book D05 for 3, Lina, lina@example.com", [], True, True, SimpleNamespace(session_hash="t1"))
+    titles = [m.metadata["title"] for m in out[:-1]]
+    assert titles[0] == "🧭 Route: LEAD_COLLECTION"
+    assert titles[1] == "🛠️ Tool: record_customer_interest (success)"
+    assert titles[2].startswith("🔍 Reflection")
+    assert out[-1].content.startswith("Saved!") and not out[-1].metadata
+    assert "l***@example.com" in out[1].content and "lina@example.com" not in out[1].content
+
+
+def test_respond_without_trace_returns_plain_text_and_survives_crashes(monkeypatch):
+    monkeypatch.setattr(app, "API_KEY", "test")
+    monkeypatch.setattr(app, "get_client", lambda: ScriptedClient(text_msg('{"intent": "GENERAL_QUESTION"}'), text_msg("Hello!")))
+    assert app.respond("hi", [], False, False) == "Hello!"
+    monkeypatch.setattr(app, "run_agent", lambda *a, **k: 1 / 0)
+    assert app.respond("hi", [], False, False) == app.FALLBACK_REPLY
+
+
+def test_build_demo_constructs_the_chat_interface():
+    demo = app.build_demo()
+    assert isinstance(demo, app.gr.ChatInterface) and demo.title == app.APP_TITLE
+    assert "not** a confirmed reservation" in app.APP_DESCRIPTION
+    assert len(app.EXAMPLES) >= 5 and app._in_notebook() is False
