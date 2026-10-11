@@ -1943,35 +1943,84 @@ def get_session(request) -> Session:
     return SESSIONS[key]
 
 
+# Line icons for the trace panels, from Lucide (https://lucide.dev, ISC licence), coloured by CSS.
+ICON_PATHS = {
+    "route": '<path d="M12 3v3"/><path d="M18.5 13h-13L2 9.5 5.5 6h13L22 9.5Z"/><path d="M12 13v8"/>',
+    "search_experiences": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    "compare_experiences": '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
+    "create_itinerary": ('<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/>'
+                         '<circle cx="18" cy="5" r="3"/>'),
+    "record_customer_interest": ('<rect width="20" height="16" x="2" y="4" rx="2"/>'
+                                 '<path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>'),
+    "record_feedback": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    "error": ('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>'
+              '<path d="M12 9v4"/><path d="M12 17h.01"/>'),
+    "backup": ('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>'
+               '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+    "approved": ('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 '
+                 '4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>'),
+    "revised": ('<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506'
+                'l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'),
+}
+TOOL_TITLES = {"search_experiences": "Searched the catalog", "compare_experiences": "Compared experiences",
+               "create_itinerary": "Planned an itinerary", "record_customer_interest": "Saved the inquiry",
+               "record_feedback": "Logged for the team"}
+
+
+def icon(name: str, tone: str = "") -> str:
+    """A classed span: Gradio's HTML sanitiser keeps it (it would strip an inline SVG's viewBox), and the CSS
+    below draws the icon as a mask, so its colour follows the theme."""
+    return f'<span class="db-ico db-ico-{name}{" db-ico-" + tone if tone else ""}" aria-hidden="true"></span>'
+
+
+def _icon_css() -> str:
+    rules = []
+    for name, paths in ICON_PATHS.items():
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" '
+               f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths}</svg>')
+        uri = "data:image/svg+xml," + quote(svg)
+        rules.append(f"#db-chat .db-ico-{name} {{ -webkit-mask-image: url('{uri}'); mask-image: url('{uri}'); }}")
+    return "\n".join(rules)
+
+
+def _panel(content: str, icon_name: str, title: str, log: str = "", duration: float = None, tone: str = ""):
+    meta = {"title": f"{icon(icon_name, tone)}{title}", "status": "done"}
+    if log:
+        meta["log"] = log
+    if duration and duration >= 0.05:  # skip near-zero timings, which would read "(0s)"
+        meta["duration"] = round(float(duration), 2)
+    return gr.ChatMessage(role="assistant", content=content, metadata=meta)
+
+
 def trace_messages(turn: AgentTurn) -> list:
-    """Collapsible panels that show how the reply was produced: route, tool calls, reflection."""
+    """Collapsible panels that show how the reply was produced: route, tool calls, backup model, reflection."""
     r = turn.route
     names = [ROUTE_NAMES[i] for i in [r.intent] + list(r.secondary)]
-    router = f"{r.method}, {r.model}" if r.model else r.method
-    panels = [gr.ChatMessage(role="assistant", content=f"`{r.intent}`: {r.reason or '-'} (router: {router})",
-                             metadata={"title": "🧭 Understood as: " + " + ".join(names), "status": "done"})]
+    router = f"{r.method} router" + (f", {r.model}" if r.model else "")
+    panels = [_panel(f"`{r.intent}`: {r.reason or '-'}", "route", "Understood as: " + " + ".join(names),
+                     log=router, duration=r.latency_s)]
     for e in turn.tool_events:
-        res = e["result"]
+        res, ok = e["result"], e["status"] == "success"
         key_facts = {k: res[k] for k in ("inquiry_id", "feedback_id", "total_matches", "feasible",
                                          "estimated_total_per_person_usd", "error", "message") if k in res}
-        panels.append(gr.ChatMessage(
-            role="assistant",
-            content=f"**Arguments:** `{json.dumps(e['arguments'], ensure_ascii=False)}`\n\n"
-                    f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`",
-            metadata={"title": f"{'🛠️' if e['status'] == 'success' else '⚠️'} Tool: {e['tool']} ({e['status']})",
-                      "status": "done"}))
+        panels.append(_panel(
+            f"**Arguments:** `{json.dumps(e['arguments'], ensure_ascii=False)}`\n\n"
+            f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`",
+            e["tool"] if ok and e["tool"] in ICON_PATHS else "error",
+            TOOL_TITLES.get(e["tool"], e["tool"]) if ok else f"Tool error: {e['tool']}",
+            log=f"{e['tool']}, {e['status']}", tone="" if ok else "warn"))
     if turn.model and turn.model != AGENT_MODELS[0]:
-        panels.append(gr.ChatMessage(
-            role="assistant", content=f"{AGENT_MODELS[0]} had reached its usage limit, so {turn.model} answered instead.",
-            metadata={"title": f"🔁 Answered by backup model {turn.model}", "status": "done"}))
+        panels.append(_panel(f"{AGENT_MODELS[0]} had reached its usage limit, so {turn.model} answered instead.",
+                             "backup", "Answered by a backup model", log=turn.model))
     if turn.reflection:
         rep = turn.reflection
-        body = (f"Method: {rep['method']} | LLM verdict: {rep.get('llm_verdict') or '-'} | "
-                f"issues: {', '.join(rep['failed_checks']) or 'none'}")
+        body = f"Issues found: {', '.join(rep['failed_checks']) or 'none'}"
         if rep["changed"]:
-            body += f"\n\n**Draft before reflection:**\n\n> {rep['draft'][:1200]}"
-        panels.append(gr.ChatMessage(role="assistant", content=body, metadata={
-            "title": f"🔍 Reflection: {'revised the draft' if rep['changed'] else 'draft approved'}", "status": "done"}))
+            body += f"\n\n**Draft before review:**\n\n> {rep['draft'][:1200]}"
+        panels.append(_panel(body, "revised" if rep["changed"] else "approved",
+                             "Reviewed the draft: " + ("revised" if rep["changed"] else "approved"),
+                             log=f"{rep['method']}" + (f", {rep['model']}" if rep.get("model") else ""),
+                             duration=rep.get("latency_s")))
     return panels
 
 
@@ -2067,12 +2116,17 @@ CSS = """
                 border-top: 1px solid rgba(169, 208, 187, .28); }
 .message-content p, .message-content li { unicode-bidi: plaintext; text-align: start; }
 #db-chat .placeholder-content { padding: 0 20px; }
+#db-chat .db-ico { display: inline-block; width: 16px; height: 16px; margin-right: 7px; vertical-align: -3px;
+                   background-color: #2F7658; -webkit-mask: no-repeat center / contain; mask: no-repeat center / contain; }
+#db-chat .db-ico.db-ico-warn { background-color: #B5562F; }
 #db-chat .bubble-wrap { padding-top: 44px !important; }  /* room for the clear-chat icon above the first message */
 #db-chat .example { background: #F4F8F5; border: 1px solid #D3E0D7; border-radius: 12px; padding: 12px 16px;
                     text-align: start; transition: border-color .15s, background .15s; }
 #db-chat .example:hover { background: #EAF2ED; border-color: #2F7658; }
 #db-chat .example:focus-visible, #db-regions button:focus-visible { outline: 2px solid #2F6E8F; outline-offset: 2px; }
 @media (prefers-color-scheme: dark) {
+  #db-chat .db-ico { background-color: #7FB399; }
+  #db-chat .db-ico.db-ico-warn { background-color: #E08A65; }
   #db-chat .example { background: #1A2C26; border-color: #2B443B; }
   #db-chat .example:hover { background: #20362F; border-color: #4F9374; }
   #db-regions button { background: #1A2C26; color: #D6E8DE; border-color: #2B443B; }
@@ -2113,6 +2167,7 @@ SIDE_HTML = f"""
 </section>
 """
 
+CSS += "\n" + _icon_css()  # one mask rule per trace-panel icon
 LAUNCH_OPTIONS = {"theme": THEME, "css": CSS, "head": HEAD, "footer_links": ["gradio"]}
 
 

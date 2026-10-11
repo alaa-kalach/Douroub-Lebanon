@@ -814,6 +814,19 @@ def test_sessions_are_per_visitor_and_bounded(monkeypatch):
     assert list(app.SESSIONS) == ["c", "d", "e"]
 
 
+def _plain(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html).strip()
+
+
+def test_trace_icons_cover_every_tool_and_mark_errors():
+    assert set(app.TOOL_FUNCTIONS) <= set(app.ICON_PATHS)
+    turn = app.AgentTurn(reply="x", route=app.Route("GENERAL_QUESTION"), tool_events=[
+        {"tool": "search_experiences", "status": "error", "arguments": {}, "result": {"error": "invalid_month"}}])
+    tool_panel = app.trace_messages(turn)[1].metadata
+    assert _plain(tool_panel["title"]) == "Tool error: search_experiences" and "db-ico-warn" in tool_panel["title"]
+    assert not re.search(r"[\U0001F300-\U0001FAFF]", "".join(p.metadata["title"] for p in app.trace_messages(turn)))
+
+
 def test_respond_guards(monkeypatch):
     assert "What would you like" in app.respond("   ", [])
     assert "shorten" in app.respond("x" * (app.MAX_MESSAGE_CHARS + 1), [])
@@ -830,10 +843,10 @@ def test_respond_returns_trace_panels_and_final_reply(monkeypatch, isolated_logs
         text_msg("Saved! Reference {id}."), _review("ok"))
     monkeypatch.setattr(app, "get_client", lambda: client)
     out = app.respond("Book D05 for 3, Lina, lina@example.com", [], True, True, SimpleNamespace(session_hash="t1"))
-    titles = [m.metadata["title"] for m in out[:-1]]
-    assert titles[0] == "🧭 Understood as: booking request"
-    assert titles[1] == "🛠️ Tool: record_customer_interest (success)"
-    assert titles[2].startswith("🔍 Reflection")
+    titles = [_plain(m.metadata["title"]) for m in out[:-1]]
+    assert titles == ["Understood as: booking request", "Saved the inquiry", "Reviewed the draft: approved"]
+    assert all('class="db-ico db-ico-' in m.metadata["title"] for m in out[:-1])  # each panel has a line icon
+    assert out[1].metadata["log"] == "record_customer_interest, success"
     assert out[-1].content.startswith("Saved!") and not out[-1].metadata
     assert "l***@example.com" in out[1].content and "lina@example.com" not in out[1].content
 
@@ -948,8 +961,8 @@ def test_agent_falls_back_mid_conversation_and_reports_it(monkeypatch, isolated_
     turn = app.run_agent("What is in Batroun?", client=client, use_llm_router=False)
     assert turn.reply == "D05 and D20." and turn.model == backup and not turn.error
     assert client.models == [first, backup, backup]  # the backup keeps the whole reply once it starts
-    titles = [m.metadata["title"] for m in app.trace_messages(turn)]
-    assert f"🔁 Answered by backup model {backup}" in titles
+    panels = {_plain(m.metadata["title"]): m.metadata for m in app.trace_messages(turn)}
+    assert panels["Answered by a backup model"]["log"] == backup
 
 
 def test_quota_message_only_when_every_model_is_out(monkeypatch):
