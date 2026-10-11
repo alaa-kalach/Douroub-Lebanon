@@ -1046,3 +1046,28 @@ def test_quota_message_only_when_every_model_is_out(monkeypatch):
     client = ModelClient({}, default=RateLimit("429 PerDay quota"))
     turn = app.run_agent("hi", client=client, use_llm_router=False)
     assert turn.reply == app.BUSY_REPLY and set(client.models) == set(app.AGENT_MODELS)
+
+
+@pytest.mark.parametrize("reply,message,expected", [
+    ("Khaled will confirm availability by email.", "book D04", []),
+    ("The team will follow up on your pickup question by email.", "pickup?", []),
+    ("If you join D04, our team will be happy to share local tips for where to eat.", "restaurants?", ["unrecorded_promise"]),
+    ("Our guides can recommend local favourites for lunch.", "restaurants?", ["unrecorded_promise"]),
+    ("Please check a forecast closer to your travel date.", "weather in October?", ["assumes_travel"]),
+    ("Please check a forecast closer to your travel date.", "weather for our trip?", []),  # the visitor said "trip"
+    ("Ahla w sahla! How can I help you plan your trip?", "hi", []),
+    ("Enjoy your stay in Lebanon!", "hi", ["assumes_travel"]),
+])
+def test_flags_unrecorded_promises_and_travel_assumptions(reply, message, expected):
+    flags = app.deterministic_checks(reply, _turn(draft=reply), app.Session(), message)
+    assert [f["category"] for f in flags] == expected
+
+
+def test_safety_net_removes_promise_and_neutralises_travel_wording(monkeypatch):
+    monkeypatch.setattr(app, "REFLECTION_MODE", "off")
+    draft = ("Byblos is known for seafood by the old port. Our team will be happy to share local tips for where to eat.\n\n"
+             "Please check the forecast closer to your travel date.")
+    final, report = app.reflect_and_revise("restaurants and weather?", _turn(draft=draft), app.Session())
+    assert "seafood by the old port" in final and "share local tips" not in final
+    assert "travel date" not in final and "closer to your date" in final
+    assert report["patched"] == ["assumes_travel", "unrecorded_promise"]

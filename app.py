@@ -1670,8 +1670,10 @@ def evaluate_agent(scenarios=AGENT_EVAL_SCENARIOS, reflect: bool = False, delay:
 
 REFLECTION_CATEGORIES = ("invented_information", "unsupported_price", "booking_claim", "unsaved_id",
                          "unsupported_save_claim", "unknown_experience", "forgot_contact_request",
-                         "ignored_constraint", "missed_question", "privacy", "off_scope", "other")
-CRITICAL_FLAGS = {"unsaved_id", "booking_claim", "unsupported_save_claim"}  # always fixed, even if the LLM check fails
+                         "ignored_constraint", "missed_question", "privacy", "off_scope", "unrecorded_promise",
+                         "assumes_travel", "other")
+# Always fixed, even if the LLM check fails or misses them.
+CRITICAL_FLAGS = {"unsaved_id", "booking_claim", "unsupported_save_claim", "unrecorded_promise", "assumes_travel"}
 
 BOOKING_CLAIM_RE = re.compile(r"""(?ix)
     \b(booking|reservation|spot|place|seat|trip|tour)s?\b[^.!?\n]{0,60}?\b(is|are|has\s+been|have\s+been)\s+(now\s+)?(all\s+)?(confirmed|reserved|booked|secured)\b
@@ -1683,6 +1685,15 @@ SAVE_CLAIM_RE = re.compile(r"""(?ix)
     \b(i|we)(?:'ve|\s+have)\s+(recorded|saved|logged|registered|submitted|passed\s+(it\s+)?on|forwarded)\b
   | \b(inquiry|request|question|feedback|complaint|details)\s+(has|have)\s+been\s+(recorded|saved|logged|submitted|passed\s+on|forwarded)\b
 """)
+# The team promising tips or recommendations nothing was recorded for (restaurants, cafés, hotels...).
+PROMISE_RE = re.compile(r"""(?ix)
+    \b(team|khaled|guides?|hosts?|we)\b[^.!?\n]{0,60}?\b(share|send|give|suggest|recommend|point\s+you)\w*\b
+    [^.!?\n]{0,50}?\b(tips|recommendations|suggestions|favou?rites|where\s+to\s+(eat|stay)|restaurants?|caf[eé]s?|hotels?)\b
+""")
+# Wording that assumes the visitor is travelling; replaced unless the visitor said so themselves.
+TRAVEL_WORDING = [(r"\byour travel dates\b", "your preferred dates"), (r"\byour travel date\b", "your date"),
+                  (r"\btravel dates?\b", "preferred date(s)"), (r"\byour (trip|stay) (to|in) Lebanon\b", "your visit")]
+VISITOR_TRAVELS_RE = re.compile(r"(?i)\b(trip|travel\w*|holiday|vacation|tourists?|flying|visiting)\b")
 PER_PERSON_RE = re.compile(r"\$\s?(\d+(?:\.\d+)?)\s*(?:USD\s*)?(?:per\s+person|/\s*person|pp\b|each\b)", re.I)
 MONEY_RE = re.compile(r"(?:\$\s?|USD\s?)(\d{1,6}(?:\.\d{1,2})?)|(\d{1,6}(?:\.\d{1,2})?)\s?(?:USD|dollars)\b", re.I)
 
@@ -1749,6 +1760,15 @@ def deterministic_checks(reply: str, turn, session, message: str = "", history=N
                     flags.append({"category": "unsupported_price", "anchor": "total", "quoted": quoted, "correct": total,
                                   "detail": f"the itinerary tool's total is ${total:g} per person, the reply says ${quoted:g}"})
 
+    feedback_saved = any(e["tool"] == "record_feedback" and e["status"] == "success" for e in turn.tool_events)
+    if not feedback_saved and PROMISE_RE.search(reply):
+        flags.append({"category": "unrecorded_promise",
+                      "detail": f"promises a team follow-up nothing was recorded for: '{PROMISE_RE.search(reply).group(0)}'"})
+    if not VISITOR_TRAVELS_RE.search(visitor_text):
+        found = [m.group(0) for pat, _ in TRAVEL_WORDING for m in re.finditer(pat, reply, re.I)]
+        if found:
+            flags.append({"category": "assumes_travel", "detail": f"assumes the visitor is travelling: {found}"})
+
     lead_saved = any(e["tool"] == "record_customer_interest" and e["status"] == "success" for e in turn.tool_events)
     if turn.route.intent == "LEAD_COLLECTION" and not lead_saved and "email" not in reply.lower():
         flags.append({"category": "forgot_contact_request",
@@ -1777,6 +1797,7 @@ def apply_safe_patches(reply: str, flags: list, session) -> str:
 
     def bad(sentence):
         return ((("booking_claim" in cats) and BOOKING_CLAIM_RE.search(sentence))
+                or (("unrecorded_promise" in cats) and PROMISE_RE.search(sentence))
                 or (("unsupported_save_claim" in cats) and SAVE_CLAIM_RE.search(sentence))
                 or any(rid in sentence for rid in unsaved))
 
@@ -1784,6 +1805,9 @@ def apply_safe_patches(reply: str, flags: list, session) -> str:
         for f in flags:
             if "correct" in f and f["anchor"].lower() in sentence.lower():
                 sentence = re.sub(rf"\$\s?{re.escape(f'{f['quoted']:g}')}(?![\d.])", f"${f['correct']:g}", sentence)
+        if "assumes_travel" in cats:
+            for pattern, neutral in TRAVEL_WORDING:
+                sentence = re.sub(pattern, neutral, sentence, flags=re.I)
         return sentence
 
     kept = []
@@ -1964,6 +1988,15 @@ REFLECTION_EVAL_CASES = [
      "message": "Plan 2 days for me, budget $120 per person.",
      "draft": "Day 1: D05 Coastal Charms of Batroun. Day 2: D04 Heritage Through Time. Total: $95 per person, well within your $120 budget.",
      "events": [_plan_event(83, 120)], "expect": {"unsupported_price"}, "must_not_contain": ["$95"], "must_contain": ["83"]},
+    {"name": "promised restaurant tips", "intent": "GENERAL_QUESTION", "message": "Any restaurant suggestions in Byblos?",
+     "draft": ("Byblos is known for seafood by the old port. Douroub Lebanon doesn't book restaurants. If you join "
+               "D04 Heritage Through Time, our team will be happy to share local tips for where to eat."),
+     "expect": {"unrecorded_promise"}, "must_not_contain": ["happy to share local tips"], "must_contain": ["seafood"]},
+    {"name": "assumes the visitor is travelling", "intent": "GENERAL_QUESTION",
+     "message": "What's the weather like in Byblos in late October?",
+     "draft": ("Late October in Byblos is usually mild and sunny. I don't have live forecasts, so please check "
+               "closer to your travel date."),
+     "expect": {"assumes_travel"}, "must_not_contain": ["travel date"], "must_contain": ["mild"]},
     {"name": "control: correct price", "intent": "GENERAL_QUESTION", "message": "How much is the Batroun coastal walk?",
      "draft": "D05 Coastal Charms of Batroun is $28 per person for a half day, including a local guide.",
      "expect": set(), "must_not_contain": [], "must_contain": ["$28"]},
