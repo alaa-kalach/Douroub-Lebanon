@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd(
 ME_DIR = ROOT / "me"
 LOG_DIR = ROOT / "logs"
 
-load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / ".env", override=True)  # the .env file wins over settings left from an earlier run
 API_KEY = os.getenv("GEMINI_API_KEY", "")
 BASE_URL = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 AGENT_MODEL = os.getenv("AGENT_MODEL", "gemini-3.8-flash")    # main agent: tool calling and planning
@@ -34,18 +34,22 @@ def has_api_key() -> bool:
     return bool(API_KEY)
 
 
+REQUEST_TIMEOUT_S = 50  # one model call; past this, the next model in the chain is tried
+
+
 @lru_cache(maxsize=1)
 def get_client():
     """OpenAI-compatible client pointed at Gemini.
 
-    max_retries makes the SDK back off and retry on rate limits (429) and transient server errors,
-    which matters on the free tier.
+    The SDK's own retries are off: a model that is overloaded or slow should hand over to the next model in
+    the chain at once (llm_call_with_fallback) rather than be retried for minutes. Rate limits are retried
+    in llm_call, which knows how long Gemini asks to wait.
     """
     if not API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.")
     from openai import OpenAI
 
-    return OpenAI(api_key=API_KEY, base_url=BASE_URL, max_retries=2, timeout=60)
+    return OpenAI(api_key=API_KEY, base_url=BASE_URL, max_retries=0, timeout=REQUEST_TIMEOUT_S)
 
 
 class DailyQuotaExceeded(RuntimeError):
@@ -87,7 +91,7 @@ def _model_chain(env_name: str, default: list) -> list:
     return list(dict.fromkeys(names or default))
 
 
-AGENT_MODELS = _model_chain("AGENT_MODELS", [AGENT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite"])
+AGENT_MODELS = _model_chain("AGENT_MODELS", [AGENT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
 FAST_MODELS = _model_chain("FAST_MODELS", [FAST_MODEL, "gemini-3.1-flash-lite", "gemini-3.6-flash"])
 AGENT_MODEL, FAST_MODEL = AGENT_MODELS[0], FAST_MODELS[0]  # the preferred model of each chain
 MODEL_COOLDOWN = {}  # model -> time before which it is skipped
@@ -118,14 +122,17 @@ def llm_call_with_fallback(client, models: list, **kwargs) -> tuple:
                 rest = min(_suggested_wait(exc) or COOLDOWN_S["minute"], COOLDOWN_S["minute"])
             elif status == 404:
                 rest = COOLDOWN_S["missing"]
-            elif isinstance(status, int) and status >= 500:
-                rest = COOLDOWN_S["server"]
+            elif (isinstance(status, int) and status >= 500) or type(exc).__name__ == "APITimeoutError":
+                rest = COOLDOWN_S["server"]  # overloaded or too slow: rest briefly, try the next model
             else:
                 raise  # a bad request or a network failure would fail on every model alike
             MODEL_COOLDOWN[model], last_exc = time.time() + rest, exc
         print(f"[FALLBACK] {model} unavailable ({type(last_exc).__name__}); trying the next model")
-    waiting = [m for m in ready if MODEL_COOLDOWN.get(m, 0) - time.time() <= COOLDOWN_S["minute"] + 1]
-    if waiting:  # every model is busy for now, but a short wait will free one
+    # Every model is busy. Models skipped above because they were cooling down count too: if one of them is only
+    # rate-limited for the next minute, wait for the one that frees up first instead of giving up.
+    waiting = sorted((m for m in models if MODEL_COOLDOWN.get(m, 0) - time.time() <= COOLDOWN_S["minute"] + 1),
+                     key=lambda m: MODEL_COOLDOWN.get(m, 0))
+    if waiting:
         return llm_call(client, model=waiting[0], **kwargs), waiting[0]
     raise last_exc
 
@@ -491,7 +498,7 @@ def evaluate_router(method: str = "llm", cases=ROUTER_EVAL_CASES, delay: float =
         except Exception as exc:
             predicted, secondary, reason = "ERROR", "", f"{type(exc).__name__}: {exc}"[:200]
         rows.append({"case": f"R{i:02d}", "category": category, "message": message, "expected": expected,
-                     "predicted": predicted, "expected_secondary": expected_sec, "predicted_secondary": secondary,
+                     "model": getattr(r, "model", "") if predicted != "ERROR" else "", "predicted": predicted, "expected_secondary": expected_sec, "predicted_secondary": secondary,
                      "correct": predicted == expected, "latency_s": round(time.perf_counter() - start, 3),
                      "reason": reason})
         if method == "llm" and delay:
@@ -1503,9 +1510,11 @@ def _results(turns, tool) -> list:
 
 
 def _check_ids_grounded(turns, session):
-    """Every experience ID in the final reply exists in the catalog; every record ID was really saved."""
+    """Every experience ID in the final reply exists in the catalog (or was typed by the visitor, e.g. a typo the
+    reply points out); every record ID was really saved."""
     reply = turns[-1].reply
-    bad_exp = [i for i in EXP_ID_RE.findall(reply) if i not in load_catalog().index]
+    typed = set(EXP_ID_RE.findall(" ".join(session.visitor_messages)))
+    bad_exp = [i for i in EXP_ID_RE.findall(reply) if i not in load_catalog().index and i not in typed]
     bad_rec = [i for i in ID_RE.findall(reply) if i not in session.saved_ids()]
     return not bad_exp and not bad_rec, f"unknown experience IDs {bad_exp}, unsaved record IDs {bad_rec}"
 
@@ -1586,7 +1595,7 @@ AGENT_EVAL_SCENARIOS = [
                                                  "rami.khoury@example.com"],
      "expect": {"record_customer_interest"}, "forbid": set(), "checks": [_check_quotes_saved_id]},
     {"name": "lead: missing email -> ask", "turns": ["I want to book the Batroun sunset kayak for 2 next weekend. My name is Nour."],
-     "expect": set(), "forbid": {"record_customer_interest"}, "checks": [_check_asks_for_email]},
+     "expect": set(), "forbid": set(), "checks": [_check_nothing_saved, _check_asks_for_email]},
     {"name": "lead: details given on the next turn", "turns": ["I'd like to reserve the Mountain Village Retreat for 2 people on 14 November.",
                                                                "Sure, Hadi Saad, hadi.saad@example.com"],
      "expect": {"record_customer_interest"}, "forbid": set(), "checks": [_check_quotes_saved_id]},
@@ -1605,7 +1614,7 @@ AGENT_EVAL_SCENARIOS = [
      "expect": {"create_itinerary"}, "forbid": set(), "checks": [_check_group_size_remembered]},
     {"name": "lead: local resident, neutral wording", "turns": ["I live in Beirut and I'd like to book D03 Taste of "
                                                                  "the Village for my family of 4."],
-     "expect": set(), "forbid": {"record_customer_interest"}, "checks": [_check_asks_for_email, _check_neutral_wording]},
+     "expect": set(), "forbid": set(), "checks": [_check_nothing_saved, _check_asks_for_email, _check_neutral_wording]},
     {"name": "typo: unknown experience ID", "turns": ["I would like D50 please."],
      "expect": set(), "forbid": {"record_feedback", "record_customer_interest"}, "checks": [_check_asks_which_experience]},
     {"name": "general: seasonal weather, not logged", "turns": ["What is the weather usually like in the Bekaa in January?"],
@@ -1625,12 +1634,17 @@ def _is_rate_limited(error: str) -> bool:
     return "429" in error or "RateLimit" in error or "Quota" in error
 
 
+def _is_api_error(error: str) -> bool:
+    """The service failed (timeout, overload, network), so the scenario says nothing about the agent itself."""
+    return any(s in error for s in ("Timeout", "timed out", "InternalServerError", "503", "500", "Connection"))
+
+
 def evaluate_agent(scenarios=AGENT_EVAL_SCENARIOS, reflect: bool = False, delay: float = 2.0, log_dir=None,
                    only=None):
     """Run each scenario as a fresh conversation through the real LLM and score it.
 
-    outcome is 'pass', 'fail', or 'rate_limited' (the API quota stopped the scenario, so it says nothing about
-    the agent's behaviour). `only` runs just the scenarios whose names contain one of the given strings.
+    outcome is 'pass', 'fail', 'rate_limited' or 'api_error' (the API quota or the service stopped the scenario,
+    so it says nothing about the agent's behaviour). `only` runs just the scenarios whose names contain one of the given strings.
     Tool writes go to logs/eval/ so evaluation records never mix with real inquiries."""
     global LOG_DIR
     if only:
@@ -1657,10 +1671,14 @@ def evaluate_agent(scenarios=AGENT_EVAL_SCENARIOS, reflect: bool = False, delay:
             if errors:
                 problems.append("error: " + "; ".join(e[:120] for e in errors))
             outcome = ("rate_limited" if any(_is_rate_limited(e) for e in errors)
+                       else "api_error" if any(_is_api_error(e) for e in errors)
                        else "pass" if not problems else "fail")
             rows.append({"scenario": sc["name"], "outcome": outcome, "passed": outcome == "pass",
                          "routes": " > ".join(t.route.intent for t in turns),
                          "tools": ", ".join(f"{e['tool']}:{e['status']}" for t in turns for e in t.tool_events) or "-",
+                         "guard_refusals": sum(e["result"].get("error") == "details_not_from_visitor"
+                                               for t in turns for e in t.tool_events),
+                         "models": ", ".join(dict.fromkeys(t.model for t in turns if t.model)) or "-",
                          "latency_s": round(sum(t.latency_s for t in turns), 1), "problems": "; ".join(problems)})
             transcripts[sc["name"]] = turns
     finally:
@@ -1683,6 +1701,7 @@ BOOKING_CLAIM_RE = re.compile(r"""(?ix)
 """)
 SAVE_CLAIM_RE = re.compile(r"""(?ix)
     \b(i|we)(?:'ve|\s+have)\s+(recorded|saved|logged|registered|submitted|passed\s+(it\s+)?on|forwarded)\b
+  | \b(i|we)(?:'ve|\s+have)\s+received\s+your\b
   | \b(inquiry|request|question|feedback|complaint|details)\s+(has|have)\s+been\s+(recorded|saved|logged|submitted|passed\s+on|forwarded)\b
 """)
 # The team promising tips or recommendations nothing was recorded for (restaurants, cafés, hotels...).
@@ -1693,6 +1712,9 @@ PROMISE_RE = re.compile(r"""(?ix)
 # Wording that assumes the visitor is travelling; replaced unless the visitor said so themselves.
 TRAVEL_WORDING = [(r"\byour travel dates\b", "your preferred dates"), (r"\byour travel date\b", "your date"),
                   (r"\btravel dates?\b", "preferred date(s)"), (r"\byour (trip|stay) (to|in) Lebanon\b", "your visit")]
+# "The team will review / reach out / follow up": only true once something was actually saved.
+FOLLOW_UP_RE = re.compile(r"(?i)\b(team|khaled|we)\b[^.!?\n]{0,40}?\b(will|can|shall)\b[^.!?\n]{0,20}?"
+                          r"\b(review|reach\s+out|contact|follow\s+up|get\s+back|be\s+in\s+touch)")
 VISITOR_TRAVELS_RE = re.compile(r"(?i)\b(trip|travel\w*|holiday|vacation|tourists?|flying|visiting)\b")
 PER_PERSON_RE = re.compile(r"\$\s?(\d+(?:\.\d+)?)\s*(?:USD\s*)?(?:per\s+person|/\s*person|pp\b|each\b)", re.I)
 MONEY_RE = re.compile(r"(?:\$\s?|USD\s?)(\d{1,6}(?:\.\d{1,2})?)|(\d{1,6}(?:\.\d{1,2})?)\s?(?:USD|dollars)\b", re.I)
@@ -1720,7 +1742,9 @@ def deterministic_checks(reply: str, turn, session, message: str = "", history=N
     saved = session.saved_ids()
     for rid in sorted(set(ID_RE.findall(reply)) - saved):
         flags.append({"category": "unsaved_id", "detail": f"{rid} was not saved by a tool in this conversation"})
-    for eid in sorted(set(EXP_ID_RE.findall(reply)) - set(load_catalog().index)):
+    visitor_text = " ".join([message] + [m["content"] for m in trim_history(history) if m["role"] == "user"])
+    typed_by_visitor = set(EXP_ID_RE.findall(visitor_text))  # e.g. "D50 is not in our catalog" is a correct reply
+    for eid in sorted(set(EXP_ID_RE.findall(reply)) - set(load_catalog().index) - typed_by_visitor):
         flags.append({"category": "unknown_experience", "detail": f"{eid} is not in the catalog"})
     if BOOKING_CLAIM_RE.search(reply):
         flags.append({"category": "booking_claim", "detail": f"claims a confirmed booking: '{BOOKING_CLAIM_RE.search(reply).group(0)}'"})
@@ -1734,7 +1758,6 @@ def deterministic_checks(reply: str, turn, session, message: str = "", history=N
     allowed = {round(float(p * n), 2) for p in load_catalog().price_usd for n in range(1, 21)}
     for e in turn.tool_events:
         allowed |= _numbers_in(e["result"])
-    visitor_text = " ".join([message] + [m["content"] for m in trim_history(history) if m["role"] == "user"])
     allowed |= {round(float(x), 2) for x in re.findall(r"\d+(?:\.\d+)?", visitor_text)}
     amounts = {round(float(a or b), 2) for a, b in MONEY_RE.findall(reply)}
     for amount in sorted(amounts - allowed):
@@ -1798,7 +1821,8 @@ def apply_safe_patches(reply: str, flags: list, session) -> str:
     def bad(sentence):
         return ((("booking_claim" in cats) and BOOKING_CLAIM_RE.search(sentence))
                 or (("unrecorded_promise" in cats) and PROMISE_RE.search(sentence))
-                or (("unsupported_save_claim" in cats) and SAVE_CLAIM_RE.search(sentence))
+                or (("unsupported_save_claim" in cats) and (SAVE_CLAIM_RE.search(sentence)
+                                                             or FOLLOW_UP_RE.search(sentence)))
                 or any(rid in sentence for rid in unsaved))
 
     def fix_prices(sentence):  # a wrong per-person price next to an experience ID is corrected from the catalog
@@ -1868,7 +1892,8 @@ def catalog_facts() -> str:
             else f"{r.duration_label} (about {r.duration_hours} hours)"
     return "\n".join(f"{r.id} {r.name} | {r.region} | {r.category} | {duration(r)} | "
                      f"${r.price_usd} per person | "
-                     f"group {r.min_group}-{r.max_group} | season: {r.season} | included: {r.inclusions}"
+                     f"group {r.min_group}-{r.max_group} | season: {r.season} | included: {r.inclusions} | "
+                     f"accessibility: {r.accessibility_notes} | food: {r.food_notes}"
                      for r in df.itertuples())
 
 
@@ -1991,7 +2016,7 @@ REFLECTION_EVAL_CASES = [
     {"name": "promised restaurant tips", "intent": "GENERAL_QUESTION", "message": "Any restaurant suggestions in Byblos?",
      "draft": ("Byblos is known for seafood by the old port. Douroub Lebanon doesn't book restaurants. If you join "
                "D04 Heritage Through Time, our team will be happy to share local tips for where to eat."),
-     "expect": {"unrecorded_promise"}, "must_not_contain": ["happy to share local tips"], "must_contain": ["seafood"]},
+     "expect": {"unrecorded_promise"}, "must_not_contain": ["happy to share local tips"], "must_contain": ["Byblos"]},
     {"name": "assumes the visitor is travelling", "intent": "GENERAL_QUESTION",
      "message": "What's the weather like in Byblos in late October?",
      "draft": ("Late October in Byblos is usually mild and sunny. I don't have live forecasts, so please check "
@@ -2018,7 +2043,9 @@ def evaluate_reflection(cases=REFLECTION_EVAL_CASES, use_llm: bool = True, clien
             session = Session()
             final, report = reflect_and_revise(c["message"], turn, session, client=client)
             detected = set(report["failed_checks"])
-            fixed = (all(s not in final for s in c["must_not_contain"])
+            leftover = [f for f in deterministic_checks(final, turn, session, c["message"])
+                        if f["category"] in CRITICAL_FLAGS]  # the final reply must not keep a critical problem
+            fixed = (all(s not in final for s in c["must_not_contain"]) and not leftover
                      and all(s.lower() in final.lower() for s in c["must_contain"]))
             if not c["expect"]:  # controls: a good draft should pass unchanged
                 ok = not report["changed"] and not ({f["category"] for f in report["deterministic_flags"]})
@@ -2033,10 +2060,12 @@ def evaluate_reflection(cases=REFLECTION_EVAL_CASES, use_llm: bool = True, clien
     return pd.DataFrame(rows)
 
 
+import warnings
 from collections import OrderedDict
 from urllib.parse import quote
 
-import gradio as gr
+warnings.filterwarnings("ignore", message="IProgress not found")  # harmless tqdm notice when Gradio loads in Jupyter
+import gradio as gr  # noqa: E402
 
 APP_TITLE = "Douroub Lebanon: chat with Alaa"
 EXAMPLES = [

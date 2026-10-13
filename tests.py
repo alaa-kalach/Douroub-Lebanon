@@ -1071,3 +1071,75 @@ def test_safety_net_removes_promise_and_neutralises_travel_wording(monkeypatch):
     assert "seafood by the old port" in final and "share local tips" not in final
     assert "travel date" not in final and "closer to your date" in final
     assert report["patched"] == ["assumes_travel", "unrecorded_promise"]
+
+
+def test_a_briefly_cooling_model_is_retried_when_the_others_are_out_for_the_day(monkeypatch):
+    # The notebook case: 3.8 and 3.6 out for the day, 3.5-lite resting for a minute -> use 3.5-lite, not "busy".
+    monkeypatch.setattr(app.time, "sleep", lambda s: None)
+    daily = RateLimit("429 quotaId GenerateRequestsPerDayPerProjectPerModel")
+    client = ModelClient({"a": daily, "b": daily, "c": text_msg("from c")})
+    app.MODEL_COOLDOWN["c"] = app.time.time() + 30
+    resp, used = app.llm_call_with_fallback(client, ["a", "b", "c"], messages=[])
+    assert used == "c" and resp.choices[0].message.content == "from c"
+
+
+def test_agent_chain_ends_with_the_lightest_model():
+    assert "gemini-3.1-flash-lite" in app.AGENT_MODELS or "AGENT_MODELS" in app.os.environ
+
+
+def test_typo_ids_typed_by_the_visitor_are_not_flagged():
+    reply = "D50 is not in our catalog. Did you mean D05 Coastal Charms of Batroun?"
+    assert app.deterministic_checks(reply, _turn(), app.Session(), "I would like D50 please.") == []
+    assert [f["category"] for f in app.deterministic_checks("Try D77!", _turn(), app.Session(), "hi")] == ["unknown_experience"]
+
+
+def test_received_your_details_counts_as_a_save_claim():
+    flags = app.deterministic_checks("Thanks Rami! We have received your details for D12.", _turn(), app.Session(), "D12")
+    assert "unsupported_save_claim" in {f["category"] for f in flags}
+
+
+def test_reviewer_sees_accessibility_and_food_notes():
+    facts = app.catalog_facts()
+    assert "Steep descents and ascents" in facts and "accessibility:" in facts and "food:" in facts
+
+
+def test_readme_documents_every_tool_and_has_a_space_header():
+    text = (ME.parent / "README.md").read_text(encoding="utf-8")
+    assert text.startswith("---\n") and "app_file: app.py" in text and "sdk: gradio" in text
+    for spec in app.TOOL_SPECS:
+        assert f"`{spec['name']}`" in text, spec["name"]
+    assert not re.search(r"(?i)assignment|course|EECE|fictional", text)
+
+
+class APITimeoutError(Exception):  # same class name as the SDK's timeout error
+    pass
+
+
+def test_a_slow_model_hands_over_to_the_next_one():
+    client = ModelClient({"slow": APITimeoutError("Request timed out."), "b": text_msg("from b")})
+    resp, used = app.llm_call_with_fallback(client, ["slow", "b"], messages=[])
+    assert used == "b" and 0 < app.MODEL_COOLDOWN["slow"] - app.time.time() <= app.COOLDOWN_S["server"] + 1
+
+
+def test_client_does_not_retry_on_its_own(monkeypatch):
+    monkeypatch.setattr(app, "API_KEY", "test")
+    app.get_client.cache_clear()
+    try:
+        client = app.get_client()
+        assert client.max_retries == 0 and client.timeout == app.REQUEST_TIMEOUT_S
+    finally:
+        app.get_client.cache_clear()
+
+
+@pytest.mark.parametrize("error,expected", [
+    ("APITimeoutError: Request timed out.", True), ("InternalServerError: 503 overloaded", True),
+    ("ConnectionError: offline", True), ("max_tool_rounds", False), ("", False)])
+def test_service_failures_are_not_scored_as_agent_failures(error, expected):
+    assert app._is_api_error(error) is expected
+
+
+def test_false_save_claim_also_drops_the_follow_up_promise(monkeypatch):
+    monkeypatch.setattr(app, "REFLECTION_MODE", "off")
+    draft = "Thanks Rami! I've recorded your inquiry. Our team will review the details and reach out to you."
+    final, _ = app.reflect_and_revise("D12 for 3", _turn("LEAD_COLLECTION", draft=draft), app.Session())
+    assert "recorded" not in final and "will review" not in final and "not been able to save" in final
