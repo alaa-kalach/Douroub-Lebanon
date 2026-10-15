@@ -23,8 +23,7 @@ cannot answer — without inventing prices, availability, or confirmations.
 
 > Live demo: _[Hugging Face Space link]_
 
-<!-- Add a screenshot: save it as docs/screenshot.png and uncomment the next line -->
-<!-- ![Alaa in the chat interface](docs/screenshot.png) -->
+![Alaa in the chat interface](docs/Interface.png) 
 
 ---
 
