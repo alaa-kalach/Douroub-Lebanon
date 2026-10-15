@@ -23,7 +23,7 @@ cannot answer — without inventing prices, availability, or confirmations.
 
 > Live demo: _[Hugging Face Space link]_
 
-![Alaa in the chat interface](docs/Interface.png) 
+![Alaa in the chat interface](docs/Interface.png)
 
 ---
 
@@ -222,11 +222,11 @@ Results from the final full run of `business_agent.ipynb` (15 October 2026), eve
 | Evaluation | Cases | Result |
 |---|---|---|
 | Router, rule-based | 43 labelled messages (8 categories, incl. mixed, adversarial, Arabic and French) | 41/43 (95.3%) |
-| Router, LLM | same 43 | **43/43 (100%)**, in all four OpenAI runs |
+| Router, LLM | same 43 | **43/43 (100%)**, in all five OpenAI runs |
 | Agent, end to end | 19 multi-turn scenarios (every tool, leads, unknowns, memory, typos, scope, injection) | **19/19** |
 | Reflection, rules only | 10 problematic and control drafts | 9/10 (inventing transport needs the LLM review) |
 | Reflection, rules + LLM | same 10 | **10/10** |
-| Offline test suite | `pytest tests.py` | 176 passed, 3 live tests skipped by default |
+| Offline test suite | `pytest tests.py` | 179 passed, 3 live tests skipped by default |
 
 How the evaluation shaped the agent, run by run:
 
@@ -237,12 +237,14 @@ How the evaluation shaped the agent, run by run:
   questions: a booking still waiting for an email, a typo ID (D50), a restaurant request. Each prompt fix moved
   the problem to another scenario, so it is now enforced in Python: the call is refused unless the router saw an
   unanswered question or feedback, or the message itself mentions something only the team can answer. In the
-  final run the model tried once to log the restaurant request; Python refused it and Alaa answered directly.
+  final run the model tried three times (a booking still missing its email, a weather question, a restaurant
+  request); Python refused each one and Alaa answered directly.
 - **Invented contact details.** In one run the model tried to save an inquiry with a name and email the visitor
   had not given; Python refused it and Alaa asked for the real details.
 - **Reflection.** The reviewer first rewrote correct drafts and added details nobody asked for. Once its prompt
   defined each problem category and asked it to fix only real problems, it corrected all eight faulty drafts and
-  left both correct ones untouched.
+  left both correct ones untouched. A live chat then showed it deleting true facts (the languages offered, the
+  itinerary service) because it could only see the catalog; it now also receives the business summary.
 
 ```bash
 python -m pytest tests.py -q                       # offline: no API calls

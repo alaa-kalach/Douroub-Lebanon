@@ -1251,3 +1251,29 @@ def test_real_unknown_question_is_still_logged(isolated_logs):
                             text_msg("Logged."))
     turn = app.run_agent("Is pickup from Hamra included?", client=client, use_llm_router=False)
     assert turn.tool_events[0]["status"] == "success" and len(_lines(isolated_logs / "feedback.jsonl")) == 1
+
+
+def test_safety_check_refusals_are_shown_as_safeguards_not_errors():
+    turn = app.AgentTurn(reply="Could you share your email?", route=app.Route("LEAD_COLLECTION"), tool_events=[
+        {"tool": "record_customer_interest", "status": "error", "arguments": {},
+         "result": {"status": "error", "error": "details_not_from_visitor", "missing": ["email"]}},
+        {"tool": "record_feedback", "status": "error", "arguments": {},
+         "result": {"status": "error", "error": "not_feedback"}}])
+    titles = [_plain(m.metadata["title"]) for m in app.trace_messages(turn)[1:]]
+    assert titles == ["Safety check: inquiry not saved (contact details still needed)",
+                      "Safety check: not logged for the team (answered directly)"]
+
+
+def test_compare_panel_shows_the_cheapest_option():
+    result = app.compare_experiences(["D01", "D02"], group_size=4)
+    turn = app.AgentTurn(reply="D01.", route=app.Route("GENERAL_QUESTION"), tool_events=[
+        {"tool": "compare_experiences", "status": "success", "arguments": {}, "result": result}])
+    assert '"cheapest": ["D01"]' in app.trace_messages(turn)[1].content
+
+
+def test_reviewer_sees_the_business_summary(monkeypatch):
+    client = ScriptedClient(_review("ok"))
+    app.llm_reflection("What services?", "We offer personalized itinerary suggestions.",
+                       _turn(draft="x"), app.Session(), [], client=client)
+    context = client.requests[0]["messages"][1]["content"]
+    assert "BUSINESS SUMMARY" in context and "Personalized recommendations and itinerary suggestions" in context

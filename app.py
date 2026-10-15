@@ -1879,12 +1879,12 @@ def apply_safe_patches(reply: str, flags: list, session) -> str:
 
 REFLECTION_PROMPT = """\
 You are the quality checker for Alaa, the AI travel concierge of Douroub Lebanon. Before a reply is sent, \
-check the DRAFT against the rules, the CATALOG FACTS, and the TOOL RESULTS, then approve it or fix it.
+check the DRAFT against the rules, the BUSINESS SUMMARY, the CATALOG FACTS, and the TOOL RESULTS, then approve it or fix it.
 
 Check every rule:
 1. No invented information. Prices, inclusions, seasons, availability, transport, pickup, accessibility, \
 dietary suitability, safety, opening hours, travel times, payment, refunds, and discounts must come from the \
-catalog facts, the business policies, or the tool results. Anything else must be presented as unknown and to \
+business summary, the catalog facts, the business policies, or the tool results. Anything else must be presented as unknown and to \
 be confirmed by the team. General background about Lebanon (typical seasonal climate, geography, culture, \
 history) is allowed when framed as general information and not as a Douroub promise; live information such as \
 forecasts must not be invented. Do not promise that the team will follow up on general questions like weather or restaurant suggestions, and do not name specific restaurants, cafés, or hotels. Durations are documented in \
@@ -1958,6 +1958,7 @@ def llm_reflection(message: str, draft: str, turn, session, flags: list, history
                + f"\n\nSAVED IDS: {sorted(session.saved_ids()) or 'none'}"
                + f"\n\nTOOL RESULTS THIS TURN:\n{json.dumps(tool_results, ensure_ascii=False)[:8000] if tool_results else 'none'}"
                + f"\n\nAUTOMATED FLAGS:\n{json.dumps(flags, ensure_ascii=False) if flags else 'none'}"
+               + f"\n\nBUSINESS SUMMARY (services, team, languages, policies):\n{load_summary()}"
                + f"\n\nCATALOG FACTS:\n{catalog_facts()}"
                + "\n\nBUSINESS POLICIES: inquiries only (team confirms by email); prices USD per person; no discounts; "
                  "transport, availability, accessibility, dietary suitability, safety, opening hours, payment and "
@@ -2155,6 +2156,8 @@ ICON_PATHS = {
 TOOL_TITLES = {"search_experiences": "Searched the catalog", "compare_experiences": "Compared experiences",
                "create_itinerary": "Planned an itinerary", "record_customer_interest": "Saved the inquiry",
                "record_feedback": "Logged for the team"}
+GUARD_REFUSAL_TITLES = {"details_not_from_visitor": "Safety check: inquiry not saved (contact details still needed)",
+                        "not_feedback": "Safety check: not logged for the team (answered directly)"}
 
 
 def icon(name: str, tone: str = "") -> str:
@@ -2193,10 +2196,17 @@ def trace_messages(turn: AgentTurn) -> list:
         res, ok = e["result"], e["status"] == "success"
         key_facts = {k: res[k] for k in ("inquiry_id", "feedback_id", "total_matches", "feasible",
                                          "estimated_total_per_person_usd", "error", "message") if k in res}
+        if isinstance(res.get("summary"), dict):  # compare_experiences: the headline of the comparison
+            key_facts.update({k: res["summary"][k] for k in ("cheapest", "price_difference_per_person_usd")
+                              if k in res["summary"]})
+        details = (f"**Arguments:** `{json.dumps(e['arguments'], ensure_ascii=False)}`\n\n"
+                   f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`")
+        if res.get("error") in GUARD_REFUSAL_TITLES:  # Python stopped the call on purpose: a safeguard, not a fault
+            panels.append(_panel(details, "approved", GUARD_REFUSAL_TITLES[res["error"]],
+                                 log=f"{e['tool']}, refused by a safety check"))
+            continue
         panels.append(_panel(
-            f"**Arguments:** `{json.dumps(e['arguments'], ensure_ascii=False)}`\n\n"
-            f"**Result:** `{json.dumps(key_facts, ensure_ascii=False)[:600]}`",
-            e["tool"] if ok and e["tool"] in ICON_PATHS else "error",
+            details, e["tool"] if ok and e["tool"] in ICON_PATHS else "error",
             TOOL_TITLES.get(e["tool"], e["tool"]) if ok else f"Tool error: {e['tool']}",
             log=f"{e['tool']}, {e['status']}", tone="" if ok else "warn"))
     if turn.model and turn.model != AGENT_MODELS[0]:
