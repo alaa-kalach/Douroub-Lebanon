@@ -7,7 +7,7 @@ visitors.
 
 **Alaa** is its AI concierge. Alaa answers questions about the company and its 20 experiences, compares options,
 plans multi-day itineraries within a budget, records booking inquiries for the team, and logs questions it
-cannot answer — without inventing prices, availability, or confirmations.
+cannot answer, without inventing prices, availability, or confirmations.
 
 ![Alaa in the chat interface](docs/Interface.png)
 
@@ -237,30 +237,6 @@ python -m pytest tests.py -q                       # offline: no API calls
 RUN_LIVE=1 python -m pytest tests.py -q -s         # also runs the live router / agent / reflection checks
 ```
 (PowerShell: `$env:RUN_LIVE="1"; python -m pytest tests.py -q -s`)
-
----
-
-## Deploying to Hugging Face Spaces
-
-1. Create a new Space with the **Gradio** SDK.
-2. Upload `app.py`, `requirements.txt`, `README.md`, and the `me/` folder (the notebook and tests are optional).
-3. In the Space's **Settings → Variables and secrets**, add a secret named `OPENAI_API_KEY`. Never upload `.env`.
-4. Put this block at the very top of the Space's `README.md`; it tells Hugging Face how to run the app:
-
-   ```yaml
-   ---
-   title: Douroub Lebanon
-   sdk: gradio
-   sdk_version: 6.30.0
-   app_file: app.py
-   license: mit
-   short_description: Alaa, the AI concierge of Douroub Lebanon
-   ---
-   ```
-
-5. The Space builds and starts `app.py` automatically.
-
-On Spaces, `logs/` lives on the Space's temporary disk and is cleared when the Space restarts.
 
 ---
 
