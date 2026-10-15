@@ -1108,9 +1108,9 @@ def test_reviewer_sees_accessibility_and_food_notes():
     assert "Steep descents and ascents" in facts and "accessibility:" in facts and "food:" in facts
 
 
-def test_readme_documents_every_tool_and_has_a_space_header():
+def test_readme_documents_every_tool_and_the_space_setup():
     text = (ME.parent / "README.md").read_text(encoding="utf-8")
-    assert text.startswith("---\n") and "app_file: app.py" in text and "sdk: gradio" in text
+    assert text.startswith("# Douroub Lebanon") and "app_file: app.py" in text and "sdk: gradio" in text
     for spec in app.TOOL_SPECS:
         assert f"`{spec['name']}`" in text, spec["name"]
     assert not re.search(r"(?i)assignment|course|EECE|fictional", text)

@@ -1,15 +1,3 @@
----
-title: Douroub Lebanon
-emoji: 🌲
-colorFrom: green
-colorTo: red
-sdk: gradio
-sdk_version: 6.30.0
-app_file: app.py
-pinned: false
-short_description: Alaa, the AI concierge of Douroub Lebanon
----
-
 # Douroub Lebanon — Alaa, the AI concierge
 
 **Douroub Lebanon** (دروب لبنان, "paths of Lebanon") is a small Lebanese experiences company: locally hosted
@@ -20,8 +8,6 @@ visitors.
 **Alaa** is its AI concierge. Alaa answers questions about the company and its 20 experiences, compares options,
 plans multi-day itineraries within a budget, records booking inquiries for the team, and logs questions it
 cannot answer — without inventing prices, availability, or confirmations.
-
-> Live demo: _[Hugging Face Space link]_
 
 ![Alaa in the chat interface](docs/Interface.png)
 
@@ -259,7 +245,20 @@ RUN_LIVE=1 python -m pytest tests.py -q -s         # also runs the live router /
 1. Create a new Space with the **Gradio** SDK.
 2. Upload `app.py`, `requirements.txt`, `README.md`, and the `me/` folder (the notebook and tests are optional).
 3. In the Space's **Settings → Variables and secrets**, add a secret named `OPENAI_API_KEY`. Never upload `.env`.
-4. The Space builds and starts `app.py` automatically. The header at the top of this README configures it.
+4. Put this block at the very top of the Space's `README.md`; it tells Hugging Face how to run the app:
+
+   ```yaml
+   ---
+   title: Douroub Lebanon
+   sdk: gradio
+   sdk_version: 6.30.0
+   app_file: app.py
+   license: mit
+   short_description: Alaa, the AI concierge of Douroub Lebanon
+   ---
+   ```
+
+5. The Space builds and starts `app.py` automatically.
 
 On Spaces, `logs/` lives on the Space's temporary disk and is cleared when the Space restarts.
 
