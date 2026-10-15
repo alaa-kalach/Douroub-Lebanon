@@ -68,7 +68,7 @@ stay in sync. `app.py` never reads the notebook at run time.
 
 ## Quick start
 
-Requires Python 3.10+ and a [Gemini API key](https://aistudio.google.com/apikey).
+Requires Python 3.10+ and an [OpenAI API key](https://platform.openai.com/api-keys).
 
 ```bash
 python -m venv .venv
@@ -86,13 +86,24 @@ To explore how it works, open `business_agent.ipynb` and run it top to bottom.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | — | required |
-| `LLM_BASE_URL` | Gemini's OpenAI-compatible endpoint | any OpenAI-compatible endpoint works |
-| `AGENT_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | fallback chain for the agent |
-| `FAST_MODELS` | `gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash` | fallback chain for the router and reflection |
+| `OPENAI_API_KEY` | — | required |
+| `AGENT_MODELS` | `gpt-6-luna,gpt-5.4-mini` | fallback chain for the agent |
+| `FAST_MODELS` | `gpt-6-luna,gpt-5.4-mini` | fallback chain for the router and reflection |
+| `REASONING_EFFORT` | `none` | sent to OpenAI as `reasoning_effort`; `none` keeps replies fast and cheap |
 | `REFLECTION_MODE` | `always` | `always`, `flags` (LLM review only when needed), or `off` |
 
 The key lives only in `.env`, which is git-ignored and never committed.
+
+### Model and cost
+
+Alaa runs on **`gpt-6-luna`**, OpenAI's most efficient model for focused, high-volume tasks ($0.10 per million
+input tokens, $0.01 cached, $0.50 per million output tokens), with `reasoning_effort="none"`: choosing a tool
+and answering a concierge question needs no long hidden reasoning, and Luna supports function calling in Chat
+Completions at that setting. `gpt-5.4-mini` is the backup if Luna is unavailable.
+
+A typical visitor message (router + agent with one tool call + reflection) uses roughly 15–25k input tokens,
+most of them the repeated system prompt, which OpenAI caches, and under 1k output tokens: well under one cent
+per message.
 
 ---
 
@@ -194,39 +205,45 @@ reflection verdict.
 | Fake confirmations | "Inquiry, not reservation" rule; booking-claim detection and patching |
 | Invented reference numbers | Only IDs returned by a successful tool call may be quoted; anything else is removed |
 | Invented contact details | **Python refuses** an inquiry whose email or name the visitor never typed, whatever the model sends |
+| A cluttered feedback log | **Python refuses** `record_feedback` unless the message is an unanswered question about the services (by the router, or by its wording: transport, diet, access, payment…) or feedback |
 | Duplicate records | The same inquiry or question sent twice while the app is running returns the existing ID |
 | Prompt injection | Visitor messages are treated as data; rule 11 and an injection test scenario |
 | Privacy | Only name, email, and request are collected; emails are masked in all printed logs; `logs/` is git-ignored |
-| API limits | Model fallback chains; a model that hits its daily quota rests for an hour; short limits are waited out |
+| API limits and outages | Model fallback chains; a slow or overloaded model hands over within 50 s; rate limits are waited out; an exhausted quota rests that model for an hour |
 
 ---
 
 ## Evaluation
 
-All evaluations are in the notebook and can be rerun. The live results below come from a full run of
-`business_agent.ipynb` on 13 October 2026.
+All evaluations are in the notebook and can be rerun.
+
+Results from the final full run of `business_agent.ipynb` (15 October 2026), every answer by `gpt-6-luna`
+(`reasoning_effort="none"`), typically 3–8 seconds per turn. The outputs are saved in the notebook.
 
 | Evaluation | Cases | Result |
 |---|---|---|
 | Router, rule-based | 43 labelled messages (8 categories, incl. mixed, adversarial, Arabic and French) | 41/43 (95.3%) |
-| Router, LLM | same 43 | **43/43 (100%)**, mixed-intent secondary detected 2/3 |
-| Agent, end to end | 19 multi-turn scenarios (every tool, leads, unknowns, memory, typos, scope, injection) | **18/19** — the remaining one was stopped by a Gemini service error, not an agent mistake |
+| Router, LLM | same 43 | **43/43 (100%)**, in all four OpenAI runs |
+| Agent, end to end | 19 multi-turn scenarios (every tool, leads, unknowns, memory, typos, scope, injection) | **19/19** |
 | Reflection, rules only | 10 problematic and control drafts | 9/10 (inventing transport needs the LLM review) |
-| Reflection, rules + LLM | same 10 | 9/10 |
-| Offline test suite | `pytest tests.py` | 154 passed, 3 live tests skipped by default |
+| Reflection, rules + LLM | same 10 | **10/10** |
+| Offline test suite | `pytest tests.py` | 176 passed, 3 live tests skipped by default |
 
-Notes on this run:
+How the evaluation shaped the agent, run by run:
 
-- **Models.** The preferred agent model (`gemini-3.8-flash`) was overloaded (HTTP 503) for the whole run, so the
-  fallback chain answered: `gemini-3.6-flash` for the first scenarios, then `gemini-3.5-flash-lite` once that
-  hit its daily quota. The router ran on `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`. These are the
-  lighter models, so the results are a conservative estimate.
-- **The one agent miss** ("over budget, then revised") got no answer: the model request failed after 72 seconds (the service was slow or overloaded). After
-  this run the client was changed to hand a slow or overloaded model over to the next one within 50 seconds, and
-  the evaluation now scores such cases as `api_error` instead of a failure.
-- **The one LLM-reflection miss** was a test that was too strict: the reviewer correctly removed an unrecorded
-  promise but also reworded "seafood", which the test required word for word. The test now checks the substance.
-- No scenario saved an invented contact detail; the Python check refused none because the model never tried.
+- **Booking + question in one message.** In the first OpenAI run, a visitor booked D03, asked whether it is
+  vegan, and gave name and email; Alaa logged the question but not the inquiry. The lead guidance now says a
+  separate question never blocks saving, and both have been saved in every run since.
+- **Over-eager feedback logging.** The small model sometimes used `record_feedback` for things that are not team
+  questions: a booking still waiting for an email, a typo ID (D50), a restaurant request. Each prompt fix moved
+  the problem to another scenario, so it is now enforced in Python: the call is refused unless the router saw an
+  unanswered question or feedback, or the message itself mentions something only the team can answer. In the
+  final run the model tried once to log the restaurant request; Python refused it and Alaa answered directly.
+- **Invented contact details.** In one run the model tried to save an inquiry with a name and email the visitor
+  had not given; Python refused it and Alaa asked for the real details.
+- **Reflection.** The reviewer first rewrote correct drafts and added details nobody asked for. Once its prompt
+  defined each problem category and asked it to fix only real problems, it corrected all eight faulty drafts and
+  left both correct ones untouched.
 
 ```bash
 python -m pytest tests.py -q                       # offline: no API calls
@@ -240,7 +257,7 @@ RUN_LIVE=1 python -m pytest tests.py -q -s         # also runs the live router /
 
 1. Create a new Space with the **Gradio** SDK.
 2. Upload `app.py`, `requirements.txt`, `README.md`, and the `me/` folder (the notebook and tests are optional).
-3. In the Space's **Settings → Variables and secrets**, add a secret named `GEMINI_API_KEY`. Never upload `.env`.
+3. In the Space's **Settings → Variables and secrets**, add a secret named `OPENAI_API_KEY`. Never upload `.env`.
 4. The Space builds and starts `app.py` automatically. The header at the top of this README configures it.
 
 On Spaces, `logs/` lives on the Space's temporary disk and is cleared when the Space restarts.
@@ -253,8 +270,8 @@ On Spaces, `logs/` lives on the Space's temporary disk and is cleared when the S
 - **Logs are local files.** Fine for a demo; a production version would send inquiries to a CRM or email.
 - **The catalog is the limit of Alaa's knowledge.** Questions about transport, accessibility, or exact
   schedules are logged for the team rather than answered.
-- **Free-tier quotas.** On the free Gemini tier, heavy use can exhaust the main model for the day; Alaa then
-  answers with lighter backup models, which follow instructions slightly less precisely.
+- **Small, fast model.** `gpt-6-luna` without extended reasoning keeps costs low; the rule checks and the
+  reflection step catch most of the mistakes a lighter model makes, but not all of them.
 - **Itinerary travel times are not modelled**, only kept sensible by grouping each day within one area.
 
 ---

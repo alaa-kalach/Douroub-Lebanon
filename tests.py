@@ -3,7 +3,7 @@
     python -m pytest tests.py -v                         # offline tests, no API calls
     $env:RUN_LIVE=1; python -m pytest tests.py -v        # also run live tests (PowerShell)
 
-Live tests call the real Gemini API; they run only when RUN_LIVE=1 and GEMINI_API_KEY is set.
+Live tests call the real model API; they run only when RUN_LIVE=1 and OPENAI_API_KEY is set.
 """
 import os
 import re
@@ -85,7 +85,7 @@ def test_identity_elements_present_in_both_docs():
 import app  # noqa: E402
 
 LIVE = pytest.mark.skipif(not (os.getenv("RUN_LIVE") == "1" and app.has_api_key()),
-                          reason="live test: set RUN_LIVE=1 and GEMINI_API_KEY")
+                          reason="live test: set RUN_LIVE=1 and OPENAI_API_KEY")
 
 
 def test_app_py_matches_notebook():
@@ -121,7 +121,8 @@ def test_instructions_allow_general_knowledge_but_not_live_data_or_logging_it():
     text = " ".join(app.INSTRUCTIONS.split())
     assert "general background about Lebanon" in text and "You have no live data" in text
     assert "Never log general or live questions (weather, restaurant or hotel suggestions)" in text
-    assert "anything the catalog already answers, such as durations" in text
+    assert "anything the catalog already answers (such as durations)" in text
+    assert "anything that belongs in an inquiry (availability on a requested date, missing contact details)" in text
     assert "do not name or recommend specific businesses" in text
     assert "Only say the team will follow up on something that was actually recorded" in text
     assert "Durations are documented" in text and "Durations are documented" in app.REFLECTION_PROMPT
@@ -462,9 +463,10 @@ def test_tool_specs_are_complete_mcp_style():
     assert app.SPEC_BY_NAME["record_feedback"]["inputSchema"]["required"] == ["question"]
 
 
-def test_api_tool_schemas_are_gemini_safe():
-    text = json.dumps(app.OPENAI_TOOLS)
-    assert len(app.OPENAI_TOOLS) == 5 and "additionalProperties" not in text and '"format"' not in text
+def test_api_tools_use_the_validated_schemas():
+    assert len(app.OPENAI_TOOLS) == 5
+    for tool, spec in zip(app.OPENAI_TOOLS, app.TOOL_SPECS):  # the model sees exactly the validated schema
+        assert tool["type"] == "function" and tool["function"]["parameters"] == spec["inputSchema"]
 
 
 @pytest.mark.parametrize("name,args,error", [
@@ -665,7 +667,7 @@ class RateLimit(Exception):
 def test_llm_call_waits_as_suggested_then_succeeds(monkeypatch):
     waits = []
     monkeypatch.setattr(app.time, "sleep", waits.append)
-    replies = [RateLimit("429 RESOURCE_EXHAUSTED ... 'retryDelay': '7s'"), RateLimit("Please retry in 3.5s."), "ok"]
+    replies = [RateLimit("429 Rate limit reached. Please try again in 7s."), RateLimit("Please try again in 3.5s."), "ok"]
 
     def create(**_):
         item = replies.pop(0)
@@ -679,12 +681,12 @@ def test_llm_call_waits_as_suggested_then_succeeds(monkeypatch):
 
 def test_llm_call_fails_fast_on_daily_quota_and_non_rate_errors(monkeypatch):
     monkeypatch.setattr(app.time, "sleep", lambda s: pytest.fail("should not wait"))
-    for error, expected in [(RateLimit("429 quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+    for error, expected in [(RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200"),
                              app.DailyQuotaExceeded), (ValueError("bad request"), ValueError)]:
         client = ScriptedClient(error=error)
         with pytest.raises(expected):
             app.llm_call(client, model="m", messages=[])
-    turn = app.run_agent("hi", client=ScriptedClient(error=RateLimit("429 PerDay quota")), use_llm_router=False)
+    turn = app.run_agent("hi", client=ScriptedClient(error=RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200")), use_llm_router=False)
     assert turn.reply == app.BUSY_REPLY
 
 
@@ -1001,7 +1003,7 @@ def test_chains_are_configured_and_start_with_the_preferred_model():
 
 def test_fallback_switches_at_once_and_rests_the_exhausted_model(monkeypatch):
     monkeypatch.setattr(app.time, "sleep", lambda s: pytest.fail("should switch models, not wait"))
-    client = ModelClient({"a": RateLimit("429 quotaId GenerateRequestsPerDayPerProjectPerModel"),
+    client = ModelClient({"a": RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200"),
                           "b": text_msg("from b")})
     resp, used = app.llm_call_with_fallback(client, ["a", "b", "c"], messages=[])
     assert used == "b" and resp.choices[0].message.content == "from b" and client.models == ["a", "b"]
@@ -1025,15 +1027,15 @@ def test_fallback_does_not_hide_bad_requests():
 def test_when_every_model_is_busy_it_waits_instead_of_failing(monkeypatch):
     waits = []
     monkeypatch.setattr(app.time, "sleep", waits.append)
-    client = ModelClient({"a": [RateLimit("429 retry in 4s"), RateLimit("429 retry in 4s"), text_msg("ok")],
-                          "b": RateLimit("429 retry in 9s")})
+    client = ModelClient({"a": [RateLimit("429 Please try again in 4s."), RateLimit("429 Please try again in 4s."), text_msg("ok")],
+                          "b": RateLimit("429 Please try again in 9s.")})
     resp, used = app.llm_call_with_fallback(client, ["a", "b"], messages=[])
     assert used == "a" and waits == [5.0] and resp.choices[0].message.content == "ok"
 
 
 def test_agent_falls_back_mid_conversation_and_reports_it(monkeypatch, isolated_logs):
     first, backup = app.AGENT_MODELS[0], app.AGENT_MODELS[1]
-    client = ModelClient({first: RateLimit("429 PerDay quota"),
+    client = ModelClient({first: RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200"),
                           backup: [tool_msg(("search_experiences", {"region": "Batroun"})), text_msg("D05 and D20.")]})
     turn = app.run_agent("What is in Batroun?", client=client, use_llm_router=False)
     assert turn.reply == "D05 and D20." and turn.model == backup and not turn.error
@@ -1043,7 +1045,7 @@ def test_agent_falls_back_mid_conversation_and_reports_it(monkeypatch, isolated_
 
 
 def test_quota_message_only_when_every_model_is_out(monkeypatch):
-    client = ModelClient({}, default=RateLimit("429 PerDay quota"))
+    client = ModelClient({}, default=RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200"))
     turn = app.run_agent("hi", client=client, use_llm_router=False)
     assert turn.reply == app.BUSY_REPLY and set(client.models) == set(app.AGENT_MODELS)
 
@@ -1076,15 +1078,18 @@ def test_safety_net_removes_promise_and_neutralises_travel_wording(monkeypatch):
 def test_a_briefly_cooling_model_is_retried_when_the_others_are_out_for_the_day(monkeypatch):
     # The notebook case: 3.8 and 3.6 out for the day, 3.5-lite resting for a minute -> use 3.5-lite, not "busy".
     monkeypatch.setattr(app.time, "sleep", lambda s: None)
-    daily = RateLimit("429 quotaId GenerateRequestsPerDayPerProjectPerModel")
+    daily = RateLimit("429 Rate limit reached for gpt-6-luna on requests per day (RPD): Limit 200, Used 200")
     client = ModelClient({"a": daily, "b": daily, "c": text_msg("from c")})
     app.MODEL_COOLDOWN["c"] = app.time.time() + 30
     resp, used = app.llm_call_with_fallback(client, ["a", "b", "c"], messages=[])
     assert used == "c" and resp.choices[0].message.content == "from c"
 
 
-def test_agent_chain_ends_with_the_lightest_model():
-    assert "gemini-3.1-flash-lite" in app.AGENT_MODELS or "AGENT_MODELS" in app.os.environ
+def test_default_models_are_the_efficient_openai_ones():
+    if "AGENT_MODELS" not in app.os.environ and "AGENT_MODEL" not in app.os.environ:
+        assert app.AGENT_MODELS == ["gpt-6-luna", "gpt-5.4-mini"]
+    if "FAST_MODELS" not in app.os.environ and "FAST_MODEL" not in app.os.environ:
+        assert app.FAST_MODELS[0] == "gpt-6-luna"
 
 
 def test_typo_ids_typed_by_the_visitor_are_not_flagged():
@@ -1143,3 +1148,106 @@ def test_false_save_claim_also_drops_the_follow_up_promise(monkeypatch):
     draft = "Thanks Rami! I've recorded your inquiry. Our team will review the details and reach out to you."
     final, _ = app.reflect_and_revise("D12 for 3", _turn("LEAD_COLLECTION", draft=draft), app.Session())
     assert "recorded" not in final and "will review" not in final and "not been able to save" in final
+
+
+
+def test_reasoning_effort_is_sent_with_every_call(monkeypatch):
+    monkeypatch.setattr(app, "REASONING_EFFORT", "none")
+    client = ScriptedClient(text_msg("pong"))
+    app.llm_call(client, model="m", messages=[])
+    assert client.requests[0]["reasoning_effort"] == "none"
+
+
+def test_reasoning_effort_not_sent_when_empty(monkeypatch):
+    monkeypatch.setattr(app, "REASONING_EFFORT", "")
+    client = ScriptedClient(text_msg("pong"))
+    app.llm_call(client, model="m", messages=[])
+    assert "reasoning_effort" not in client.requests[0]
+
+
+def test_openai_billing_quota_switches_models_instead_of_waiting(monkeypatch):
+    monkeypatch.setattr(app.time, "sleep", lambda s: pytest.fail("must not wait on a billing error"))
+    client = ModelClient({"a": RateLimit("429 You exceeded your current quota. code: insufficient_quota"),
+                          "b": text_msg("from b")})
+    assert app.llm_call_with_fallback(client, ["a", "b"], messages=[])[1] == "b"
+    assert app.MODEL_COOLDOWN["a"] - app.time.time() > 3000
+
+
+@pytest.mark.parametrize("text,seconds", [
+    ("Rate limit reached. Please try again in 1.5s.", 1.5), ("Please try again in 820ms.", 0.82),
+    ("no hint", None)])
+def test_wait_hints_from_openai_errors(text, seconds):
+    assert app._suggested_wait(Exception(text)) == seconds
+
+
+def test_assistant_message_keeps_only_fields_the_api_accepts():
+    msg = tool_msg(("search_experiences", {"query": "Byblos"}))
+    data = app._assistant_message(msg)
+    assert set(data) == {"role", "content", "tool_calls"}
+    assert set(data["tool_calls"][0]) == {"id", "type", "function"}
+    raw = SimpleNamespace(content=None, model_dump=lambda exclude_none: {
+        "content": None, "annotations": [], "refusal": None,
+        "tool_calls": [{"id": None, "type": "function", "function": {"name": "f", "arguments": "{}"}}]})
+    data = app._assistant_message(raw)
+    assert set(data) == {"role", "content", "tool_calls"} and data["tool_calls"][0]["id"].startswith("call_")
+
+
+def test_tool_results_are_sent_in_the_standard_format():
+    client = ScriptedClient(tool_msg(("search_experiences", {"query": "Byblos"})), text_msg("D04."))
+    app.run_agent("Byblos?", client=client, use_llm_router=False)
+    tool = [m for m in client.requests[1]["messages"] if m["role"] == "tool"][0]
+    assert set(tool) == {"role", "tool_call_id", "content"}
+
+
+def test_lead_guidance_saves_mixed_requests_in_the_same_reply():
+    lead = app.ROUTE_GUIDANCE["LEAD_COLLECTION"]
+    assert "save the inquiry in this reply" in lead and "does not block it" in lead
+    prompt = app.build_system_prompt(app.Route("LEAD_COLLECTION", ["FEEDBACK_UNKNOWN"]))
+    assert "Handle every part in this same reply" in prompt
+
+
+def test_reviewer_is_told_to_fix_only_real_problems():
+    text = " ".join(app.REFLECTION_PROMPT.split())
+    assert "offering to log a question" in text and "Do not add information the visitor did not ask for" in text
+
+
+
+def test_feedback_tool_is_not_a_substitute_for_an_inquiry():
+    desc = app.SPEC_BY_NAME["record_feedback"]["description"]
+    assert "never to save a booking request" in desc and "availability for a requested date" in desc
+    lead = app.ROUTE_GUIDANCE["LEAD_COLLECTION"]
+    assert "Availability on the requested date is part of the inquiry" in lead
+    assert "If the name or email is missing, just ask for it: do not save anything yet" in lead
+
+
+G, L, F = "GENERAL_QUESTION", "LEAD_COLLECTION", "FEEDBACK_UNKNOWN"
+
+
+@pytest.mark.parametrize("message,route,loggable", [
+    ("Any restaurant suggestions in Byblos?", app.Route(G), False),
+    ("I would like D50 please.", app.Route(L), False),
+    ("I want to book the Batroun sunset kayak for 2 next weekend. My name is Nour.", app.Route(L), False),
+    ("What is the weather usually like in the Bekaa in January?", app.Route(G), False),
+    ("Is pickup from my hotel included?", app.Route(G), True),          # router missed it; the wording did not
+    ("Book D03 for 2, is it vegan?", app.Route(L), True),
+    ("Book D03 for 2 on Sunday", app.Route(L, [F]), True),
+    ("Our guide was 40 minutes late and never apologised.", app.Route(F), True),
+    ("هل النقل من بيروت مشمول؟", app.Route(F), True),
+])
+def test_only_team_questions_and_feedback_can_be_logged(message, route, loggable):
+    assert app.is_loggable(message, route) is loggable
+
+
+def test_agent_cannot_log_a_general_question(isolated_logs):
+    client = ScriptedClient(tool_msg(("record_feedback", {"question": "Visitor wants restaurant tips in Byblos"})),
+                            text_msg("Byblos is known for seafood by the old port; we don't book restaurants."))
+    turn = app.run_agent("Any restaurant suggestions in Byblos?", client=client, use_llm_router=False)
+    assert turn.tool_events[0]["result"]["error"] == "not_feedback"
+    assert not (isolated_logs / "feedback.jsonl").exists() and "seafood" in turn.reply
+
+
+def test_real_unknown_question_is_still_logged(isolated_logs):
+    client = ScriptedClient(tool_msg(("record_feedback", {"question": "Is pickup from Hamra included?"})),
+                            text_msg("Logged."))
+    turn = app.run_agent("Is pickup from Hamra included?", client=client, use_llm_router=False)
+    assert turn.tool_events[0]["status"] == "success" and len(_lines(isolated_logs / "feedback.jsonl")) == 1

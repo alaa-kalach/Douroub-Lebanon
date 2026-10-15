@@ -24,10 +24,12 @@ ME_DIR = ROOT / "me"
 LOG_DIR = ROOT / "logs"
 
 load_dotenv(ROOT / ".env", override=True)  # the .env file wins over settings left from an earlier run
-API_KEY = os.getenv("GEMINI_API_KEY", "")
-BASE_URL = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-AGENT_MODEL = os.getenv("AGENT_MODEL", "gemini-3.8-flash")    # main agent: tool calling and planning
-FAST_MODEL = os.getenv("FAST_MODEL", "gemini-3.5-flash-lite")  # router and reflection checks
+API_KEY = os.getenv("OPENAI_API_KEY", "")
+AGENT_MODEL = os.getenv("AGENT_MODEL", "gpt-6-luna")  # main agent: tool calling and planning
+FAST_MODEL = os.getenv("FAST_MODEL", "gpt-6-luna")    # router and reflection checks
+# OpenAI's reasoning models think before answering. "none" keeps replies fast and cheap and is required for
+# function calling with gpt-6-luna in Chat Completions. Set it to an empty value to use the model's default.
+REASONING_EFFORT = os.getenv("REASONING_EFFORT", "none")
 
 
 def has_api_key() -> bool:
@@ -39,44 +41,52 @@ REQUEST_TIMEOUT_S = 50  # one model call; past this, the next model in the chain
 
 @lru_cache(maxsize=1)
 def get_client():
-    """OpenAI-compatible client pointed at Gemini.
+    """OpenAI client.
 
     The SDK's own retries are off: a model that is overloaded or slow should hand over to the next model in
     the chain at once (llm_call_with_fallback) rather than be retried for minutes. Rate limits are retried
-    in llm_call, which knows how long Gemini asks to wait.
+    in llm_call, which knows how long the API asks to wait.
     """
     if not API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.")
+        raise RuntimeError("OPENAI_API_KEY is not set. Copy .env.example to .env and add your key.")
     from openai import OpenAI
 
-    return OpenAI(api_key=API_KEY, base_url=BASE_URL, max_retries=0, timeout=REQUEST_TIMEOUT_S)
+    return OpenAI(api_key=API_KEY, max_retries=0, timeout=REQUEST_TIMEOUT_S)
 
 
 class DailyQuotaExceeded(RuntimeError):
-    """The model's free-tier daily quota is used up; waiting a minute will not help."""
+    """The quota is used up for a long time (a daily limit, or no billing credit left); waiting a minute will not help."""
 
 
 def _suggested_wait(exc) -> float | None:
-    """Gemini's 429 errors include how long to wait, e.g. 'retryDelay': '37s' or 'Please retry in 36.2s'."""
-    m = re.search(r"retry(?:Delay)?\W{0,4}(\d+(?:\.\d+)?)s", str(exc), re.I) or \
-        re.search(r"retry in (\d+(?:\.\d+)?)\s*s", str(exc), re.I)
-    return float(m.group(1)) if m else None
+    """OpenAI's 429 errors say how long to wait, e.g. 'Please try again in 1.5s' or 'try again in 820ms'."""
+    m = re.search(r"try again in (\d+(?:\.\d+)?)\s*(ms|s)\b", str(exc), re.I)
+    if not m:
+        return None
+    return float(m.group(1)) / (1000 if m.group(2).lower() == "ms" else 1)
+
+
+# A per-day limit (requests or tokens per day) will not reset within a minute.
+DAILY_LIMIT_RE = re.compile(r"(?i)\bper day\b|\b(RPD|TPD)\b")
 
 
 def llm_call(client, attempts: int = 4, max_wait: float = 65, **kwargs):
     """chat.completions.create with quota-aware retries.
 
-    On a rate limit (HTTP 429) it waits as long as Gemini suggests (per-minute windows need ~30-60 s, longer
-    than the SDK's own short back-off) and tries again. A daily-quota error is raised at once.
+    On a rate limit (HTTP 429) it waits as long as the API suggests and tries again. A long-term quota error
+    (a daily limit, or OpenAI's insufficient_quota when billing credit runs out) is raised at once.
     """
+    if REASONING_EFFORT and "reasoning_effort" not in kwargs:
+        kwargs["reasoning_effort"] = REASONING_EFFORT
     for attempt in range(1, attempts + 1):
         try:
             return client.chat.completions.create(**kwargs)
         except Exception as exc:
             if getattr(exc, "status_code", None) != 429:
                 raise
-            if "PerDay" in str(exc):
-                raise DailyQuotaExceeded(f"Daily free-tier quota exhausted for {kwargs.get('model')}") from exc
+            if DAILY_LIMIT_RE.search(str(exc)) or "insufficient_quota" in str(exc):
+                raise DailyQuotaExceeded(f"Quota exhausted for {kwargs.get('model')}: "
+                                         f"{'check billing' if 'insufficient_quota' in str(exc) else 'daily limit'}") from exc
             if attempt == attempts:
                 raise
             wait = min(_suggested_wait(exc) or 15 * attempt, max_wait) + 1
@@ -85,14 +95,14 @@ def llm_call(client, attempts: int = 4, max_wait: float = 65, **kwargs):
 
 
 # ---------------------------------------------------------------- model fallback chains
-# Free-tier quotas are per model, so when one model hits its limit another usually still has quota.
+# Limits and outages are per model, so when one model is unavailable another usually still answers.
 def _model_chain(env_name: str, default: list) -> list:
     names = [m.strip() for m in os.getenv(env_name, "").split(",") if m.strip()]
     return list(dict.fromkeys(names or default))
 
 
-AGENT_MODELS = _model_chain("AGENT_MODELS", [AGENT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
-FAST_MODELS = _model_chain("FAST_MODELS", [FAST_MODEL, "gemini-3.1-flash-lite", "gemini-3.6-flash"])
+AGENT_MODELS = _model_chain("AGENT_MODELS", [AGENT_MODEL, "gpt-5.4-mini"])
+FAST_MODELS = _model_chain("FAST_MODELS", [FAST_MODEL, "gpt-5.4-mini"])
 AGENT_MODEL, FAST_MODEL = AGENT_MODELS[0], FAST_MODELS[0]  # the preferred model of each chain
 MODEL_COOLDOWN = {}  # model -> time before which it is skipped
 COOLDOWN_S = {"daily": 3600, "minute": 60, "server": 30, "missing": 600}
@@ -208,7 +218,8 @@ not give.
 and tools cannot answer, say honestly that you do not know, call record_feedback with the question, \
 and tell them the team will follow up. Only log questions about Douroub Lebanon's own services and \
 arrangements that the knowledge and tools do not answer. Never log general or live questions (weather, \
-restaurant or hotel suggestions) or anything the catalog already answers, such as durations. Also use record_feedback for \
+restaurant or hotel suggestions), anything the catalog already answers (such as durations), or anything that \
+belongs in an inquiry (availability on a requested date, missing contact details). Also use record_feedback for \
 complaints, corrections, \
 suggestions, and requests for experiences we do not offer. If a visitor names an experience ID that \
 is not in the catalog (usually a typo), ask which experience they meant instead of logging it.
@@ -245,7 +256,11 @@ ROUTE_GUIDANCE = {
     "LEAD_COLLECTION": (
         "The router classified this message as LEAD_COLLECTION. Help the visitor submit an inquiry: "
         "collect their name, a valid email, and what they want (experience, preferred date or dates, group size). Ask only "
-        "for missing details, then call record_customer_interest and share the reference ID. Make clear "
+        "for missing details, then call record_customer_interest and share the reference ID. When the name, a "
+        "valid email, and the request are all in the conversation, save the inquiry in this reply: a separate "
+        "question the visitor asked about the experience (diet, transport, access) does not block it; log that "
+        "question with record_feedback as well. Availability on the requested date is part of the inquiry, never "
+        "a feedback entry. If the name or email is missing, just ask for it: do not save anything yet. Make clear "
         "the team will confirm by email; it is not a reservation yet."),
     "FEEDBACK_UNKNOWN": (
         "The router classified this message as FEEDBACK_UNKNOWN. If it is a question about Douroub Lebanon's "
@@ -268,8 +283,9 @@ def build_system_prompt(route=None, today: date | None = None, memory: str = "")
         guidance = ROUTE_GUIDANCE[route.intent]
         if route.secondary:
             guidance += (" The message also contains: " + ", ".join(route.secondary)
-                         + ". Handle that part as well (for example log an unknown question with "
-                         "record_feedback while collecting the lead).")
+                         + ". Handle every part in this same reply: for example, save the inquiry with "
+                         "record_customer_interest when the contact details are present AND log the unknown "
+                         "question with record_feedback.")
         parts.append("# ROUTING\n" + guidance)
     if memory:
         parts.append("# SESSION MEMORY\n" + memory)
@@ -1080,7 +1096,9 @@ TOOL_SPECS = [
         "name": "record_feedback",
         "description": ("Log a question you cannot answer from the business knowledge or tools (transport, "
                         "accessibility, dietary needs, safety, payment, services we do not offer), or a complaint, "
-                        "correction, suggestion, or praise. Returns a feedback_id."),
+                        "correction, suggestion, or praise. Returns a feedback_id. Only for a question the visitor "
+                        "actually asked or feedback they gave: never to save a booking request, to note missing "
+                        "contact details, or to ask about availability for a requested date (the inquiry covers that)."),
         "inputSchema": {"type": "object", "required": ["question"], "additionalProperties": False,
                         "properties": {
                             "question": {"type": "string", "description": "the visitor's question or feedback, in full"},
@@ -1157,28 +1175,8 @@ TOOL_FUNCTIONS = {"record_customer_interest": record_customer_interest, "record_
                   "search_experiences": search_experiences, "compare_experiences": compare_experiences,
                   "create_itinerary": create_itinerary}
 
-# Gemini accepts only a subset of JSON Schema in function declarations, so the copy sent to the
-# model drops documentation-only keywords. The full MCP spec above is what Python validates against.
-_API_SCHEMA_KEYS = {"type", "description", "enum", "items", "properties", "required", "minimum", "maximum",
-                    "minItems", "maxItems"}
-
-
-def _api_schema(schema: dict) -> dict:
-    out = {}
-    for key, value in schema.items():
-        if key not in _API_SCHEMA_KEYS:
-            continue
-        if key == "properties":
-            out[key] = {name: _api_schema(sub) for name, sub in value.items()}
-        elif key == "items":
-            out[key] = _api_schema(value)
-        else:
-            out[key] = value
-    return out
-
-
 OPENAI_TOOLS = [{"type": "function", "function": {"name": s["name"], "description": s["description"],
-                                                  "parameters": _api_schema(s["inputSchema"])}}
+                                                  "parameters": s["inputSchema"]}}
                 for s in TOOL_SPECS]
 SPEC_BY_NAME = {s["name"]: s for s in TOOL_SPECS}
 
@@ -1389,13 +1387,19 @@ class AgentTurn:
 
 
 def _assistant_message(msg) -> dict:
-    """Convert the SDK message to a dict for the next request, keeping provider extras (Gemini returns a
-    thought signature with each tool call that must be sent back) and making sure every call has an id."""
-    data = msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else dict(msg)
-    data["role"] = "assistant"
-    data["content"] = msg.content or ""
-    for call in data.get("tool_calls", []):
-        call["id"] = call.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+    """Convert the SDK message to a dict for the next request.
+
+    Only fields the Chat Completions API accepts on input are kept (response-only fields such as `annotations`
+    are rejected if sent back), and every tool call gets an id."""
+    raw = msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else dict(msg)
+    data = {"role": "assistant", "content": msg.content or ""}
+    calls = []
+    for call in raw.get("tool_calls") or []:
+        kept = {"id": call.get("id") or f"call_{uuid.uuid4().hex[:12]}", "type": call.get("type", "function"),
+                "function": {"name": call["function"]["name"], "arguments": call["function"].get("arguments") or "{}"}}
+        calls.append(kept)
+    if calls:
+        data["tool_calls"] = calls
     return data
 
 
@@ -1425,8 +1429,31 @@ def lead_details_not_from_visitor(args: dict, visitor_text: str) -> list:
     return missing
 
 
-def guarded_execute(name: str, arguments, visitor_text: str) -> dict:
-    """execute_tool(), except that an inquiry is refused when its contact details did not come from the visitor."""
+GUARD_ERRORS = {"details_not_from_visitor", "not_feedback"}  # calls Python refused before running the tool
+
+
+def is_loggable(message: str, route=None) -> bool:
+    """May this visitor message be logged with record_feedback?
+
+    Yes if the router saw an unanswered question or feedback in it (primary or secondary intent), or if the
+    message itself mentions something only the team can answer (transport, diet, access, payment...) or reads
+    as feedback (a complaint, a suggestion). General questions (weather, restaurants), typo IDs, and booking
+    requests waiting for an email are not team questions, so they are not logged."""
+    intents = {route.intent, *route.secondary} if route is not None else set()
+    return ("FEEDBACK_UNKNOWN" in intents or bool(UNKNOWN_RE.search(message or ""))
+            or bool(FEEDBACK_RE.search(message or "")))
+
+
+def guarded_execute(name: str, arguments, visitor_text: str, message: str = "", route=None) -> dict:
+    """execute_tool(), with two checks Python enforces whatever the model decides: an inquiry is refused when
+    its contact details did not come from the visitor, and feedback is refused when the visitor's message is
+    not an unanswered question or feedback."""
+    if name == "record_feedback" and route is not None and not is_loggable(message, route):
+        print("[TOOL] record_feedback -> refused (the message is not an unanswered question or feedback)")
+        return {"status": "error", "error": "not_feedback",
+                "message": ("Tool NOT executed: the visitor's message is not a question about our services that the "
+                            "documents cannot answer, and not feedback, so it must not be logged. Answer it directly: "
+                            "give general information, ask for missing details, or ask which experience they meant.")}
     if name == "record_customer_interest":
         missing = lead_details_not_from_visitor(_parse_args(arguments), visitor_text)
         if missing:
@@ -1472,11 +1499,11 @@ def run_agent(message: str, history=None, session: Session = None, client=None, 
             messages.append(assistant)
             for call, sent in zip(calls, assistant["tool_calls"]):
                 name, args = call.function.name, _parse_args(call.function.arguments)
-                result = guarded_execute(name, call.function.arguments, visitor_text)  # validated + executed in Python
+                result = guarded_execute(name, call.function.arguments, visitor_text, message, r)  # checked + run in Python
                 session.update_from_tool(name, args, result)
                 events.append({"round": rounds, "tool": name, "arguments": _redact(args),
                                "status": result.get("status"), "result": result})
-                messages.append({"role": "tool", "tool_call_id": sent["id"], "name": name,
+                messages.append({"role": "tool", "tool_call_id": sent["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
         else:
             error = "max_tool_rounds"
@@ -1660,9 +1687,11 @@ def evaluate_agent(scenarios=AGENT_EVAL_SCENARIOS, reflect: bool = False, delay:
                 turns.append(turn)
                 history += [{"role": "user", "content": text}, {"role": "assistant", "content": turn.reply}]
                 time.sleep(delay)
-            succeeded, called = set(_tools_used(turns, "success")), set(_tools_used(turns))
+            succeeded = set(_tools_used(turns, "success"))
             problems = [f"missing tool {t}" for t in sorted(sc["expect"] - succeeded)]
-            problems += [f"forbidden tool {t}" for t in sorted(sc["forbid"] & called)]
+            # A call Python refused (GUARD_ERRORS) did nothing, so it does not count as using a forbidden tool.
+            ran = {e["tool"] for t in turns for e in t.tool_events if e["result"].get("error") not in GUARD_ERRORS}
+            problems += [f"forbidden tool {t}" for t in sorted(sc["forbid"] & ran)]
             for check in [_check_ids_grounded] + sc["checks"]:
                 ok, detail = check(turns, session)
                 if not ok:
@@ -1676,7 +1705,7 @@ def evaluate_agent(scenarios=AGENT_EVAL_SCENARIOS, reflect: bool = False, delay:
             rows.append({"scenario": sc["name"], "outcome": outcome, "passed": outcome == "pass",
                          "routes": " > ".join(t.route.intent for t in turns),
                          "tools": ", ".join(f"{e['tool']}:{e['status']}" for t in turns for e in t.tool_events) or "-",
-                         "guard_refusals": sum(e["result"].get("error") == "details_not_from_visitor"
+                         "guard_refusals": sum(e["result"].get("error") in GUARD_ERRORS
                                                for t in turns for e in t.tool_events),
                          "models": ", ".join(dict.fromkeys(t.model for t in turns if t.model)) or "-",
                          "latency_s": round(sum(t.latency_s for t in turns), 1), "problems": "; ".join(problems)})
@@ -1874,6 +1903,15 @@ do not assume the visitor is travelling from abroad or on a trip unless they sai
 
 AUTOMATED FLAGS are hints from rule-based checks; confirm or dismiss each one.
 
+Be precise about categories. "unrecorded_promise" means the draft says the team WILL do something specific \
+(share tips, call, send recommendations) that nothing was recorded for; offering to log a question, or \
+explaining that the team confirms inquiries by email, is fine. "booking_claim" means the draft says a booking is \
+confirmed or reserved. Only report a problem the draft actually has.
+
+When you revise, fix only the problems you found. Do not add information the visitor did not ask for (extra \
+durations, inclusions, prices, or caveats), do not drop correct content, and do not rewrite sentences that are \
+already fine.
+
 If the draft follows every rule, return verdict "ok". Otherwise return verdict "revise" and a corrected reply \
 that changes as little as possible: keep what is correct, Alaa's warm tone, and the formatting.
 
@@ -2016,7 +2054,7 @@ REFLECTION_EVAL_CASES = [
     {"name": "promised restaurant tips", "intent": "GENERAL_QUESTION", "message": "Any restaurant suggestions in Byblos?",
      "draft": ("Byblos is known for seafood by the old port. Douroub Lebanon doesn't book restaurants. If you join "
                "D04 Heritage Through Time, our team will be happy to share local tips for where to eat."),
-     "expect": {"unrecorded_promise"}, "must_not_contain": ["happy to share local tips"], "must_contain": ["Byblos"]},
+     "expect": {"unrecorded_promise"}, "must_not_contain": ["happy to share local tips"], "must_contain": ["restaurant"]},
     {"name": "assumes the visitor is travelling", "intent": "GENERAL_QUESTION",
      "message": "What's the weather like in Byblos in late October?",
      "draft": ("Late October in Byblos is usually mild and sunny. I don't have live forecasts, so please check "
@@ -2185,7 +2223,7 @@ def respond(message: str, history: list, reflection_on: bool = True, show_trace:
     if len(text) > MAX_MESSAGE_CHARS:
         return f"That message is a bit long for me. Could you shorten it to under {MAX_MESSAGE_CHARS} characters?"
     if not has_api_key():
-        return "The assistant is not configured yet (missing GEMINI_API_KEY). Please contact the site owner."
+        return "The assistant is not configured yet (missing OPENAI_API_KEY). Please contact the site owner."
     session = get_session(request)
     try:
         turn = run_agent(text, history, session, reflect=reflection_on)
