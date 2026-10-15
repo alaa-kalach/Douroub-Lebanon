@@ -94,7 +94,6 @@ def llm_call(client, attempts: int = 4, max_wait: float = 65, **kwargs):
             time.sleep(wait)
 
 
-# ---------------------------------------------------------------- model fallback chains
 # Limits and outages are per model, so when one model is unavailable another usually still answers.
 def _model_chain(env_name: str, default: list) -> list:
     names = [m.strip() for m in os.getenv(env_name, "").split(",") if m.strip()]
@@ -245,7 +244,7 @@ travelling from abroad, staying at a hotel, or on a multi-day trip unless they s
 """
 
 
-# Handling path for each intent chosen by the router (Section 3).
+# Handling path for each intent chosen by the router 
 ROUTE_GUIDANCE = {
     "GENERAL_QUESTION": (
         "The router classified this message as GENERAL_QUESTION. Answer from the business knowledge and "
@@ -1299,7 +1298,6 @@ class Session:
         if result.get("status") != "success":
             return
         # A duplicate result still points to a record that really exists, so it counts for this conversation too
-        # (e.g. the same visitor resending a request from another tab); each ID is listed once.
         if name == "record_customer_interest":
             if result["inquiry_id"] not in self.saved_ids():
                 self.saved_records.append({"type": "inquiry", "id": result["inquiry_id"]})
@@ -1381,9 +1379,9 @@ class AgentTurn:
     rounds: int = 0
     latency_s: float = 0.0
     error: str = ""
-    model: str = ""         # the model that wrote the reply (may be a fallback; see Section 0)
-    draft: str = ""         # the agent's reply before reflection (Section 6)
-    reflection: dict = None  # reflection report (Section 6)
+    model: str = ""         
+    draft: str = ""         
+    reflection: dict = None  # reflection report 
 
 
 def _assistant_message(msg) -> dict:
@@ -2404,11 +2402,11 @@ def build_demo() -> gr.Blocks:
 
 def _in_notebook() -> bool:
     try:
-        get_ipython  # noqa: F821 - defined only inside Jupyter/IPython
+        get_ipython  
         return True
     except NameError:
         return False
 
 
-if __name__ == "__main__" and not _in_notebook():  # `python app.py` locally or on Hugging Face Spaces
+if __name__ == "__main__" and not _in_notebook():  # `python app.py` locally 
     build_demo().launch(**LAUNCH_OPTIONS)
